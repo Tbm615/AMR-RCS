@@ -149,4 +149,10 @@ if __name__ == "__main__":
     sys.stdout.flush(); sys.stderr.flush()
     # Skip interpreter teardown: Qt/PySide object destruction order at exit
     # can segfault after all checks already ran.
+    if sys.platform == "win32":
+        # ExitProcess runs Qt's DLL detach handlers, which crash while
+        # widgets are still alive; TerminateProcess skips them.
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.TerminateProcess(k32.GetCurrentProcess(), rc)
     os._exit(rc)
