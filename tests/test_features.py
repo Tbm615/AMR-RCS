@@ -303,6 +303,9 @@ if __name__ == "__main__":
         # ExitProcess runs Qt's DLL detach handlers, which crash while
         # widgets are still alive; TerminateProcess skips them.
         import ctypes
+        from ctypes import wintypes
         k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
         k32.TerminateProcess(k32.GetCurrentProcess(), rc)
     os._exit(rc)
