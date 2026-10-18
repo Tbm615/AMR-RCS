@@ -70,17 +70,22 @@ def main() -> int:
     print(f"  publishes received: {len(publishes)}")
 
     ok = True
-    def check(name, cond):
+    def check(name, cond, detail=""):
         nonlocal ok
-        print(f"  {'OK' if cond else 'FAIL'}  {name}")
+        print(f"  {'OK' if cond else 'FAIL'}  {name}" + (f"  ({detail})" if detail else ""))
         if not cond: ok = False
 
     check("WebSocket opened and ≥5 topics subscribed", len(subscribed) >= 5)
     check("/scan_filtered subscribed", "/scan_filtered" in subscribed)
     check("/odom subscribed", "/odom" in subscribed)
     check("/map subscribed", "/map" in subscribed)
-    check("/cmd_vel_safe advertised", "/cmd_vel_safe" in advertised)
-    check("≥10 cmd_vel publishes", sum(1 for p in publishes if p["topic"] == "/cmd_vel_safe") >= 10)
+    check("/tf_static subscribed (static lidar mount)", "/tf_static" in subscribed)
+    check("Nav2 action status subscribed", "/navigate_to_pose/_action/status" in subscribed)
+    # Idle teleop must stay silent: a constant zero stream on /cmd_vel_safe
+    # would override Nav2 on the real robot.
+    check("no cmd_vel published while idle",
+          not any(p["topic"] == "/cmd_vel_safe" for p in publishes),
+          f"{sum(1 for p in publishes if p['topic'] == '/cmd_vel_safe')} msgs")
 
     if not ok and out:
         print("\n--- binary stdout/stderr (last 30 lines) ---")
