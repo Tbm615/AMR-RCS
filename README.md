@@ -71,11 +71,11 @@ fall back to `--onedir` if so.
 
 ### Cross-platform packaging via GitHub Actions
 
-`.github/workflows/build.yml` builds **both** Linux (`.tar.gz`) and Windows
-(`.zip`) artifacts on every push, runs the smoke + E2E tests, and attaches
-them to the workflow run. Push the repo to GitHub and download the
-`rcs-windows-x86_64` artifact from the Actions tab — that is the proper way
-to produce a Windows build without a Windows machine on hand.
+`ci/github-actions-build.yml` builds **both** Linux (`.tar.gz`) and Windows
+(`.zip`) artifacts, runs the smoke + E2E tests, and attaches them to the
+workflow run. To enable it, move it to `.github/workflows/build.yml` and
+push (pushing workflow files needs a token with the `workflow` scope), then
+download the `rcs-windows-x86_64` artifact from the Actions tab.
 
 ## Robot side
 
