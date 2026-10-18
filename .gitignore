@@ -1,0 +1,29 @@
+# PyInstaller build output (regenerate with `python build.py`)
+build/
+build-win/
+dist/rcs/
+dist/rcs-windows-x86_64/
+dist/rcs-linux-x86_64.tar.gz
+dist/rcs-windows-x86_64.zip
+dist-win/
+*.spec
+
+# Cross-build toolchain cache
+.build-tools/
+.wine-prefix/
+
+# venv
+.venv/
+venv/
+env/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# local
+.DS_Store
+*.log
+

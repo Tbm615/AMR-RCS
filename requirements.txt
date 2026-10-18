@@ -1,0 +1,9 @@
+PySide6>=6.6
+roslibpy>=1.6
+twisted>=23.10
+pyOpenSSL>=23.0
+service-identity>=23.1
+numpy>=1.24
+Pillow>=10.0
+pyqtgraph>=0.13
+PyOpenGL>=3.1
