@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 PORT = 9521
-EXE = os.environ.get("RCS_BINARY", str(ROOT / "dist" / "rcs" / "rcs"))
+_DEFAULT_EXE = ROOT / "dist" / "rcs" / ("rcs.exe" if sys.platform == "win32" else "rcs")
+EXE = os.environ.get("RCS_BINARY", str(_DEFAULT_EXE))
 
 
 def _start_mock():
@@ -40,14 +41,19 @@ def main() -> int:
     env.pop("DISPLAY", None)
     # Point the host at loopback so wine localhost works OR a LAN IP for wine.
     host_arg = os.environ.get("RCS_MOCK_HOST", "127.0.0.1")
-    args = shlex.split(EXE) + ["--autoconnect", "--host", f"{host_arg}:{PORT}"]
+    # A plain path (incl. Windows paths with backslashes) is used as-is;
+    # anything else, e.g. "wine path/to/rcs.exe", is split like a shell would.
+    exe_argv = [EXE] if os.path.exists(EXE) else shlex.split(EXE)
+    args = exe_argv + ["--autoconnect", "--host", f"{host_arg}:{PORT}"]
     print(f"spawning: {' '.join(args)}")
     proc = subprocess.Popen(args, cwd=str(ROOT), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
         time.sleep(10)
     finally:
-        subprocess.call(["pkill", "-f", shlex.split(EXE)[-1]])
+        # Under wine the real rcs.exe is a grandchild of the launcher.
+        if len(exe_argv) > 1 and sys.platform != "win32":
+            subprocess.call(["pkill", "-f", exe_argv[-1]])
         proc.terminate()
         try: proc.wait(timeout=4)
         except subprocess.TimeoutExpired: proc.kill()

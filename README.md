@@ -71,11 +71,11 @@ fall back to `--onedir` if so.
 
 ### Cross-platform packaging via GitHub Actions
 
-`ci/github-actions-build.yml` builds **both** Linux (`.tar.gz`) and Windows
-(`.zip`) artifacts, runs the smoke + E2E tests, and attaches them to the
-workflow run. To enable it, move it to `.github/workflows/build.yml` and
-push (pushing workflow files needs a token with the `workflow` scope), then
-download the `rcs-windows-x86_64` artifact from the Actions tab.
+`.github/workflows/build.yml` runs on every push, on a real Linux and a
+real Windows machine: feature tests, the source E2E test, then builds the
+app and runs the built binary against the mock rosbridge. On Windows it
+builds and tests both the console and the windowed (no console) variants.
+Download the archives from the run's Artifacts section on the Actions tab.
 
 ## Robot side
 
