@@ -170,7 +170,7 @@ class MainWindow(QMainWindow):
     def _wire(self) -> None:
         # connection panel ↔ ros client
         self.p_conn.connect_requested.connect(self._on_connect)
-        self.p_conn.disconnect_requested.connect(self.ros.disconnect)
+        self.p_conn.disconnect_requested.connect(self.ros.disconnect_robot)
         self.p_conn.profile_changed.connect(self._on_profile_changed)
 
         self.ros.connected.connect(self._on_ros_connected)
@@ -206,11 +206,12 @@ class MainWindow(QMainWindow):
         self.p_mission.goal_requested.connect(self.ros.send_nav_goal)
         self.p_mission.cancel_requested.connect(self.ros.cancel_nav_goal)
         self.p_mission.waypoints_changed.connect(self.p_map.view.set_waypoints)
+        self.ros.nav_status.connect(self.p_mission.on_nav_status)
         self.p_mission.waypoints_changed.connect(self.p_nav.view.set_waypoints)
 
     def _on_connect(self, profile: RobotProfile) -> None:
         self.ros.set_profile(profile)
-        self.ros.connect()
+        self.ros.connect_robot()
         self.sb_robot.setText(f"{profile.name} ({profile.ws_url})")
         self._apply_profile_to_panels(profile)
 
@@ -309,23 +310,30 @@ class MainWindow(QMainWindow):
 
     # ---- E-stop (software, on the client) ----
 
-    def _set_estop(self, on: bool) -> None:
+    def _set_estop(self, on: bool, publish: bool = True) -> None:
+        """Software E-stop. Nothing on the robot consumes /amr/estop, so the
+        stop is enforced client-side: cancel the Nav2 goal, stop any mission,
+        and stream zero velocity (teleop panel does that while engaged).
+        This is not a substitute for the hardware E-stop."""
+        if on == getattr(self, "_estop_on", False):
+            return
+        self._estop_on = on
         self.sidebar_estop.blockSignals(True)
-        self.p_teleop.estop_btn.blockSignals(True)
         self.sidebar_estop.setChecked(on)
-        self.p_teleop.estop_btn.setChecked(on)
         self.sidebar_estop.blockSignals(False)
-        self.p_teleop.estop_btn.blockSignals(False)
-        self.p_teleop._set_estop(on)   # also updates text
+        self.p_teleop.set_estop_state(on)
         if on:
             self.sb_estop.setText("● estop: ENGAGED")
             self.sb_estop.setStyleSheet("color:#ff6a6a; font-weight:700;")
-            # publish zero immediately
+            self.p_mission.stop_mission()
+            self.ros.cancel_nav_goal()
             self.ros.publish_cmd_vel(0.0, 0.0)
         else:
             self.sb_estop.setText("● estop: clear")
             self.sb_estop.setStyleSheet("color:#39d98a;")
+        if publish:
+            self.ros.publish_estop(on)
 
     def _on_estop_remote(self, on: bool) -> None:
-        # robot-published latched E-stop (/amr/estop) — mirror into UI
-        self._set_estop(on)
+        # /amr/estop from another client (e.g. amr_control_center) — mirror it
+        self._set_estop(on, publish=False)

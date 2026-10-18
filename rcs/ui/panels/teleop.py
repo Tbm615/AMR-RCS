@@ -113,18 +113,32 @@ class TeleopPanel(QWidget):
     # ---- estop ----
 
     def _set_estop(self, on: bool) -> None:
-        self._estop = on
-        self.estop_btn.setText("● E-STOP ENGAGED (click to release)" if on else "● E-STOP")
+        """Slot for the panel's own button: update state and tell the window."""
+        self.set_estop_state(on)
         self.estop_changed.emit(on)
+
+    def set_estop_state(self, on: bool) -> None:
+        """Update state and visuals only (no signal), for external callers."""
+        self._estop = on
+        self.estop_btn.blockSignals(True)
+        self.estop_btn.setChecked(on)
+        self.estop_btn.blockSignals(False)
+        self.estop_btn.setText("● E-STOP ENGAGED (click to release)" if on else "● E-STOP")
 
     def is_estopped(self) -> bool:
         return self._estop
 
     # ---- streaming ----
 
+    # Zero commands sent after the operator lets go, so the robot brakes
+    # (0.3 s at 20 Hz). After that teleop goes silent: Nav2 publishes to the
+    # same driver topic and a constant zero stream would override it.
+    _STOP_TICKS = 6
+
     def _tick(self) -> None:
         if self._estop:
             lin, ang = 0.0, 0.0
+            active = True               # E-stop keeps streaming zeros
         else:
             # joystick wins over keys when touched
             jx, jy = self._jx, self._jy
@@ -133,8 +147,14 @@ class TeleopPanel(QWidget):
             ang_n = -jx if abs(jx) > 1e-3 else ka
             lin = max(-1.0, min(1.0, lin_n)) * self._lin_lim
             ang = max(-1.0, min(1.0, ang_n)) * self._ang_lim
+            active = abs(lin) > 1e-4 or abs(ang) > 1e-4
         self.readout.setText(f"v = {lin:+.2f} m/s   ω = {ang:+.2f} rad/s")
-        self.cmd_vel.emit(lin, ang)
+        if active:
+            self._stop_left = self._STOP_TICKS
+            self.cmd_vel.emit(lin, ang)
+        elif getattr(self, "_stop_left", 0) > 0:
+            self._stop_left -= 1
+            self.cmd_vel.emit(0.0, 0.0)
 
     def apply_limits(self, lin: float, ang: float) -> None:
         self.lin.setValue(lin)

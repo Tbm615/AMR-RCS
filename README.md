@@ -39,18 +39,31 @@ pip install -r requirements.txt
 python -m rcs
 ```
 
-## End-to-end test (no robot needed)
+## Testing without the robot
 
-`tests/test_e2e.py` spins up a minimal mock rosbridge WebSocket server
-(`tests/mock_rosbridge.py`), connects the full application to it, drives
-teleop + a nav goal, and asserts the server received the right messages
-and the client subscribed to the right topics. Runs headless:
+| Test | What it needs | What it checks |
+|---|---|---|
+| `tests/test_features.py` | nothing | map/scan/path rendering, PointCloud2 and JPEG decoding, TF chains, mission executor incl. retries (31 checks) |
+| `tests/test_e2e.py` | nothing (built-in mock rosbridge) | the app connects, subscribes, streams teleop, publishes goals |
+| `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
+| `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (26 checks) |
 
-```bash
-QT_QPA_PLATFORM=offscreen python tests/test_e2e.py
-```
+All tests run headless with `QT_QPA_PLATFORM=offscreen`.
 
-The current result on this machine is **ALL CHECKS PASSED** (11 checks).
+### Simulated robot with real Nav2 (`sim/`)
+
+`sim/run_sim.sh` starts, on an isolated ROS domain (77, loopback only):
+`rosbridge_server` on port 9090, this workspace's
+`navigation/robot_navigation.launch.py` (AMCL, SmacPlanner2D + MPPI, CBF
+filter) on `maps/map23_04.yaml`, and `sim/fake_base.py`, a kinematic stand-in
+for the drive and lidar (odom, TF, `/scan_filtered` ray-cast on the map).
+`sim/stop_sim.sh` stops it all. Point RCS at `127.0.0.1:9090` to use it
+interactively, or run `tests/test_sim_nav2.py`, which covers: localizing from
+the app, scan-to-map alignment through `/tf_static`, goal from the map panel,
+cancel, E-stop while driving, and a looping mission.
+
+If `rosbridge_suite` is not installed via apt, build it into a separate
+workspace and pass it as `BRIDGE_WS=/path/to/ws`.
 
 ## Build standalone executable
 
@@ -87,3 +100,16 @@ ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
 ```
 
 See `scripts/robot_setup_rosbridge.md` for a systemd unit template.
+
+## Safety notes
+
+- The app's **E-STOP is software**: it cancels the Nav2 goal, stops the
+  running mission, publishes `/amr/estop=true` and keeps sending zero
+  velocity on `/cmd_vel_safe`. Nothing on the robot consumes `/amr/estop`
+  today, and the driver follows the latest message on `/cmd_vel_safe`, so
+  another publisher (e.g. the gamepad) can still move the robot. Keep the
+  hardware E-stop within reach.
+- Teleop only publishes while you are driving (plus 0.3 s of zero commands
+  when you let go), so it never blocks Nav2.
+- Teleop goes to `/cmd_vel_safe` and bypasses the CBF filter, like the
+  gamepad and the web console.

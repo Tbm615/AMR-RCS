@@ -1,12 +1,14 @@
 """rosbridge client wrapped as a QObject with signals.
 
-Everything in this module runs on roslibpy's own IO thread; it posts into Qt
-by emitting signals (queued, thread-safe). Nothing here uses rclpy — the
+roslibpy delivers callbacks on its own network threads. Those threads never
+touch Qt: they drop messages into a locked mailbox, and a QTimer on the GUI
+thread drains it and emits the signals. Nothing here uses rclpy — the
 operator PC does not need ROS 2 installed.
 """
 from __future__ import annotations
 
 import math
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -58,9 +60,10 @@ def yaw_to_quat(yaw: float) -> Dict[str, float]:
 class RosClient(QObject):
     """Qt-friendly wrapper around roslibpy.Ros.
 
-    All subscription callbacks arrive from the roslibpy IO thread. We re-emit
-    them as Qt signals (which are queued across threads via Qt::AutoConnection
-    + the receiver's thread affinity), so UI slots run safely on the GUI thread.
+    Signals are only ever emitted on the GUI thread (see _post/_drain), so
+    every connected slot, including plain lambdas, runs on the GUI thread.
+    Emitting Qt signals straight from roslibpy's threads corrupted the heap
+    under high message rates (TF/odom at 50 Hz).
     """
 
     connected = Signal()
@@ -68,18 +71,18 @@ class RosClient(QObject):
     connection_error = Signal(str)
     _request_reconnect = Signal()   # internal: hop IO thread -> GUI thread
 
-    odom_received = Signal(dict)
-    scan_received = Signal(dict)
-    map_received = Signal(dict)
-    global_costmap_received = Signal(dict)
-    local_costmap_received = Signal(dict)
-    plan_received = Signal(dict)
-    image_received = Signal(bytes)      # compressed JPEG
-    cloud_received = Signal(dict)
-    rosout_received = Signal(dict)
-    tf_received = Signal(dict)
+    odom_received = Signal(object)
+    scan_received = Signal(object)
+    map_received = Signal(object)
+    global_costmap_received = Signal(object)
+    local_costmap_received = Signal(object)
+    plan_received = Signal(object)
+    image_received = Signal(object)      # compressed JPEG (bytes)
+    cloud_received = Signal(object)
+    rosout_received = Signal(object)
+    tf_received = Signal(object)
     estop_received = Signal(bool)
-    nav_feedback = Signal(dict)
+    nav_feedback = Signal(object)
     nav_status = Signal(str)             # "idle" | "active" | "succeeded" | "aborted" | "canceled"
 
     def __init__(self, profile: Optional[RobotProfile] = None, parent=None):
@@ -96,23 +99,60 @@ class RosClient(QObject):
         # thread). roslibpy's close/error callbacks fire on its IO thread, so
         # we bounce through a queued-connection signal.
         self._request_reconnect.connect(self._reconnect_timer.start)
+        # mailbox filled by network threads, drained on the GUI thread
+        self._lock = threading.Lock()
+        self._events: deque = deque(maxlen=5000)     # ordered, every message
+        self._latest: Dict[str, tuple] = {}           # coalesced, newest only
+        self._pump = QTimer(self)
+        self._pump.setInterval(15)
+        self._pump.timeout.connect(self._drain)
+        self._pump.start()
         self._want_connected = False
+        self._seen_goals: set = set()
+        self._goal_acked = True
         self._nav_goal_id: Optional[str] = None
+
+    # ---- thread hand-off ----
+
+    _NOARG = object()
+
+    def _post(self, signal_name: str, payload: Any = _NOARG, coalesce: bool = False) -> None:
+        """Queue a signal emission for the GUI thread. With coalesce=True only
+        the newest payload per signal is kept (for high-rate state topics)."""
+        with self._lock:
+            if coalesce:
+                self._latest[signal_name] = (signal_name, payload)
+            else:
+                self._events.append((signal_name, payload))
+
+    def _drain(self) -> None:
+        with self._lock:
+            if not self._events and not self._latest:
+                return
+            items = list(self._events) + list(self._latest.values())
+            self._events.clear()
+            self._latest.clear()
+        for name, payload in items:
+            sig = getattr(self, name)
+            if payload is self._NOARG:
+                sig.emit()
+            else:
+                sig.emit(payload)
 
     # ---- lifecycle ----
 
     def set_profile(self, profile: RobotProfile) -> None:
         was_connected = self.is_connected()
         if was_connected:
-            self.disconnect()
+            self.disconnect_robot()
         self.profile = profile
         if was_connected:
-            self.connect()
+            self.connect_robot()
 
     def is_connected(self) -> bool:
         return self._ros is not None and self._ros.is_connected
 
-    def connect(self) -> None:
+    def connect_robot(self) -> None:
         if roslibpy is None:
             self.connection_error.emit("roslibpy is not installed")
             return
@@ -132,7 +172,7 @@ class RosClient(QObject):
         except Exception as e:  # noqa: BLE001
             self._on_error(str(e))
 
-    def disconnect(self) -> None:
+    def disconnect_robot(self) -> None:
         self._want_connected = False
         self._reconnect_timer.stop()
         if self._ros:
@@ -165,18 +205,18 @@ class RosClient(QObject):
         self._open()
 
     def _on_ready(self) -> None:
-        self.connected.emit()
+        self._post("connected")
         self._subscribe_defaults()
 
     def _on_closed(self) -> None:
-        self.disconnected.emit()
+        self._post("disconnected")
         if self._want_connected:
-            self._request_reconnect.emit()   # cross-thread safe
+            self._post("_request_reconnect")
 
     def _on_error(self, msg: str) -> None:
-        self.connection_error.emit(msg)
+        self._post("connection_error", msg)
         if self._want_connected:
-            self._request_reconnect.emit()
+            self._post("_request_reconnect")
 
     # ---- subscriptions ----
 
@@ -188,35 +228,67 @@ class RosClient(QObject):
             return
         t = self.profile.topics
         self._subscribe(t.odom, "nav_msgs/msg/Odometry",
-                        lambda m: (self._mark("odom"), self.odom_received.emit(m)))
+                        lambda m: (self._mark("odom"), self._post("odom_received", m, coalesce=True)))
         self._subscribe(t.scan, "sensor_msgs/msg/LaserScan",
-                        lambda m: (self._mark("scan"), self.scan_received.emit(m)),
+                        lambda m: (self._mark("scan"), self._post("scan_received", m, coalesce=True)),
                         throttle_rate=100)
         self._subscribe(t.map, "nav_msgs/msg/OccupancyGrid",
-                        lambda m: (self._mark("map"), self.map_received.emit(m)),
+                        lambda m: (self._mark("map"), self._post("map_received", m, coalesce=True)),
                         latch=True)
         self._subscribe(t.global_costmap, "nav_msgs/msg/OccupancyGrid",
-                        lambda m: (self._mark("global_costmap"), self.global_costmap_received.emit(m)),
+                        lambda m: (self._mark("global_costmap"), self._post("global_costmap_received", m, coalesce=True)),
                         throttle_rate=1000, latch=True)
         self._subscribe(t.local_costmap, "nav_msgs/msg/OccupancyGrid",
-                        lambda m: (self._mark("local_costmap"), self.local_costmap_received.emit(m)),
+                        lambda m: (self._mark("local_costmap"), self._post("local_costmap_received", m, coalesce=True)),
                         throttle_rate=500)
         self._subscribe(t.plan, "nav_msgs/msg/Path",
-                        lambda m: (self._mark("plan"), self.plan_received.emit(m)))
+                        lambda m: (self._mark("plan"), self._post("plan_received", m, coalesce=True)))
         self._subscribe(t.camera_image, "sensor_msgs/msg/CompressedImage",
                         lambda m: (self._mark("image"), self._on_image(m)),
                         throttle_rate=self.profile.limits.image_throttle_ms)
         if t.camera_cloud:
             self._subscribe(t.camera_cloud, "sensor_msgs/msg/PointCloud2",
-                            lambda m: (self._mark("cloud"), self.cloud_received.emit(m)),
+                            lambda m: (self._mark("cloud"), self._post("cloud_received", m, coalesce=True)),
                             throttle_rate=self.profile.limits.cloud_throttle_ms)
         self._subscribe(t.rosout, "rcl_interfaces/msg/Log",
-                        lambda m: (self._mark("rosout"), self.rosout_received.emit(m)))
+                        lambda m: (self._mark("rosout"), self._post("rosout_received", m)))
         self._subscribe(t.estop_topic, "std_msgs/msg/Bool",
-                        lambda m: self.estop_received.emit(bool(m.get("data", False))),
+                        lambda m: self._post("estop_received", bool(m.get("data", False))),
                         latch=True)
         self._subscribe("/tf", "tf2_msgs/msg/TFMessage",
-                        lambda m: (self._mark("tf"), self.tf_received.emit(m)))
+                        lambda m: (self._mark("tf"), self._post("tf_received", m)))
+        # Static transforms (e.g. base_link->laser_frame from the URDF) only
+        # ever arrive on /tf_static.
+        self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage",
+                        lambda m: self._post("tf_received", m))
+        if t.nav_action:
+            self._subscribe(f"{t.nav_action}/_action/status", "action_msgs/msg/GoalStatusArray",
+                            self._on_nav_status)
+
+    # action_msgs/GoalStatus codes
+    _NAV_STATUS = {1: "active", 2: "active", 3: "canceling",
+                   4: "succeeded", 5: "canceled", 6: "aborted"}
+
+    def _on_nav_status(self, m: dict) -> None:
+        sl = m.get("status_list") or []
+        if not sl:
+            return
+        latest = max(sl, key=lambda s: (s.get("goal_info", {}).get("stamp", {}).get("sec", 0),
+                                        s.get("goal_info", {}).get("stamp", {}).get("nanosec", 0)))
+        uuid = tuple(latest.get("goal_info", {}).get("goal_id", {}).get("uuid", []) or [])
+        if uuid and uuid not in self._seen_goals:
+            self._seen_goals.add(uuid)
+            self._goal_acked = True          # Nav2 accepted a new goal
+        status = self._NAV_STATUS.get(int(latest.get("status", 0)))
+        if status:
+            self._post("nav_status", status)
+
+    def publish_estop(self, on: bool) -> None:
+        if not self.profile or not self.profile.topics.estop_topic:
+            return
+        pub = self._advertise(self.profile.topics.estop_topic, "std_msgs/msg/Bool")
+        if pub is not None:
+            pub.publish(roslibpy.Message({"data": bool(on)}))
 
     def _subscribe(
         self,
@@ -237,11 +309,11 @@ class RosClient(QObject):
         data = m.get("data")
         if isinstance(data, str):
             try:
-                self.image_received.emit(base64.b64decode(data))
+                self._post("image_received", base64.b64decode(data), coalesce=True)
             except Exception:
                 pass
         elif isinstance(data, (bytes, bytearray)):
-            self.image_received.emit(bytes(data))
+            self._post("image_received", bytes(data), coalesce=True)
 
     # ---- publishing ----
 
@@ -311,7 +383,18 @@ class RosClient(QObject):
                 "orientation": yaw_to_quat(float(yaw)),
             },
         }))
-        self.nav_status.emit("active")
+        # /goal_pose is fire-and-forget; Nav2 drops it if bt_navigator isn't
+        # active yet. Report "pending" until the action status shows a new
+        # goal, and "no_response" if that doesn't happen.
+        self._goal_acked = False
+        self.nav_status.emit("pending")
+        QTimer.singleShot(self.GOAL_ACK_TIMEOUT_MS, self._check_goal_ack)
+
+    GOAL_ACK_TIMEOUT_MS = 4000
+
+    def _check_goal_ack(self) -> None:
+        if not self._goal_acked:
+            self.nav_status.emit("no_response")
 
     def cancel_nav_goal(self) -> None:
         """Send empty goal to cancel via the Nav2 BT navigator's cancel service.

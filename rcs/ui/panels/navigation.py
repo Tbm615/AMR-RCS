@@ -54,13 +54,24 @@ class NavigationPanel(QWidget):
         wrap.setFixedWidth(240)
         root.addWidget(wrap)
 
+    _STATUS_TEXT = {
+        "pending": "goal sent, waiting for Nav2…",
+        "active": "navigating",
+        "canceling": "canceling…",
+        "succeeded": "goal reached",
+        "canceled": "canceled",
+        "aborted": "aborted by Nav2 (no path / stuck)",
+        "no_response": "no response from Nav2.\nIs navigation running and the robot localized?\n(set the initial pose on the 2D Map page)",
+    }
+
     def set_status(self, status: str) -> None:
-        self.state_lbl.setText(status)
-        if status == "active":
+        self.state_lbl.setText(self._STATUS_TEXT.get(status, status))
+        self.state_lbl.setWordWrap(True)
+        if status in ("active", "pending", "canceling"):
             self.state_lbl.setStyleSheet("color:#ffb547; font-weight:600;")
         elif status == "succeeded":
             self.state_lbl.setStyleSheet("color:#39d98a; font-weight:600;")
-        elif status in ("aborted", "canceled"):
+        elif status in ("aborted", "canceled", "no_response"):
             self.state_lbl.setStyleSheet("color:#ff6a6a; font-weight:600;")
         else:
             self.state_lbl.setStyleSheet("color:#8b93a7;")

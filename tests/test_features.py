@@ -246,7 +246,7 @@ def test_mission_executor(tmp_path: Path) -> None:
 
     # advance 10 "arrivals" so we also wrap through the loop
     for i in range(10):
-        panel.update_robot_pose(*goals_sent[-1], 0.0) if goals_sent else None
+        (panel.update_robot_pose(*goals_sent[-1], 0.0), panel.on_nav_status("succeeded")) if goals_sent else None
         time.sleep(0.01)
         panel._exec_tick()
         _app.processEvents()
@@ -273,10 +273,32 @@ def test_mission_executor(tmp_path: Path) -> None:
     panel.goal_requested.connect(lambda x, y, yaw: goals_sent.append((x, y)))
     panel._play()
     for _ in range(5):
-        panel.update_robot_pose(*goals_sent[-1], 0.0) if goals_sent else None
+        (panel.update_robot_pose(*goals_sent[-1], 0.0), panel.on_nav_status("succeeded")) if goals_sent else None
         panel._exec_tick(); _app.processEvents()
     check("non-looping mission stops after last waypoint",
           not panel._exec_running and panel._exec_idx == -1)
+
+    # Nav2 reports "succeeded" for a preempted goal while the robot is still
+    # elsewhere: the executor must resend the waypoint, not wait forever.
+    goals_sent.clear()
+    panel.cur = m2; panel._exec_idx = -1
+    panel.update_robot_pose(5.0, 5.0, 0.0)
+    panel._play()
+    first = len(goals_sent)
+    panel.on_nav_status("succeeded")
+    end = time.monotonic() + 2.5
+    while time.monotonic() < end:
+        _app.processEvents(); time.sleep(0.02)
+    check("false 'succeeded' far from waypoint triggers a resend",
+          len(goals_sent) == first + 1 and goals_sent[-1] == goals_sent[0],
+          f"{goals_sent}")
+    for _ in range(3):
+        panel.on_nav_status("aborted")
+        end = time.monotonic() + 2.2
+        while time.monotonic() < end:
+            _app.processEvents(); time.sleep(0.02)
+    check("gives up after 3 failed retries", not panel._exec_running,
+          panel.status_lbl.text())
 
 
 # ---- main ----

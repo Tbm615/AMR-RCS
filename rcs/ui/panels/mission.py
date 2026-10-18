@@ -19,7 +19,7 @@ from ..widgets.map_view import MapView
 class MissionPanel(QWidget):
     goal_requested = Signal(float, float, float)
     cancel_requested = Signal()
-    waypoints_changed = Signal(list)   # list[(x,y)] for map overlay
+    waypoints_changed = Signal(object)   # list[(x,y)] for map overlay
 
     def __init__(self, store: MissionStore, parent=None):
         super().__init__(parent)
@@ -31,6 +31,9 @@ class MissionPanel(QWidget):
         self._exec_idx: int = -1
         self._exec_running: bool = False
         self._exec_dwell_until: float = 0.0
+        self._retries = 0
+        self._nav_state = ""
+        self._in_tol_since = 0.0
         self._robot_x = 0.0
         self._robot_y = 0.0
         self._build()
@@ -302,15 +305,49 @@ class MissionPanel(QWidget):
         self.status_lbl.setText("paused")
         self.cancel_requested.emit()
 
+    def stop_mission(self) -> None:
+        if self._exec_running or self._exec_idx >= 0:
+            self._stop()
+
     def _stop(self) -> None:
         self._exec_running = False
         self._exec_idx = -1
         self.status_lbl.setText("stopped")
         self.cancel_requested.emit()
 
-    def _dispatch_current(self) -> None:
+    MAX_RETRIES = 3
+
+    def on_nav_status(self, status: str) -> None:
+        """Retry the current waypoint when Nav2 drops or aborts the goal."""
+        if not self._exec_running or not self.cur or self._exec_idx < 0:
+            return
+        self._nav_state = status
+        # "succeeded" while not at the waypoint happens when a goal preempts
+        # one that was about to finish (Nav2 reports the old goal's success).
+        if status not in ("no_response", "aborted", "succeeded"):
+            return
+        wp = self.cur.waypoints[self._exec_idx]
+        if math.hypot(self._robot_x - wp.x, self._robot_y - wp.y) <= wp.tolerance:
+            return                      # already there; the tick will advance
+        self._retries += 1
+        if self._retries > self.MAX_RETRIES:
+            self._stop()
+            self.status_lbl.setText(f"stopped: Nav2 could not reach {wp.name} ({status})")
+            return
+        self.status_lbl.setText(f"{status} at {wp.name}, retry {self._retries}/{self.MAX_RETRIES}…")
+        QTimer.singleShot(2000, self._retry_current)
+
+    def _retry_current(self) -> None:
+        if self._exec_running and self._exec_idx >= 0:
+            self._dispatch_current(reset_retries=False)
+
+    def _dispatch_current(self, reset_retries: bool = True) -> None:
         if not self.cur:
             return
+        if reset_retries:
+            self._retries = 0
+        self._nav_state = "pending"
+        self._in_tol_since = 0.0
         wp = self.cur.waypoints[self._exec_idx]
         self.status_lbl.setText(f"going to {wp.name} ({self._exec_idx+1}/{len(self.cur.waypoints)})")
         self.goal_requested.emit(wp.x, wp.y, wp.yaw)
@@ -320,6 +357,17 @@ class MissionPanel(QWidget):
             return
         wp = self.cur.waypoints[self._exec_idx]
         d = math.hypot(self._robot_x - wp.x, self._robot_y - wp.y)
+        if d > wp.tolerance:
+            self._in_tol_since = 0.0
+        elif self._exec_dwell_until == 0:
+            # Let Nav2 finish its own goal before sending the next one:
+            # preempting a goal that is about to complete confuses Nav2.
+            # Fall back to tolerance alone if no status arrives for 5 s.
+            now = time.monotonic()
+            if not self._in_tol_since:
+                self._in_tol_since = now
+            if self._nav_state in ("active", "pending") and now - self._in_tol_since < 5.0:
+                return
         if d <= wp.tolerance:
             if self._exec_dwell_until == 0:
                 self._exec_dwell_until = time.monotonic() + wp.dwell

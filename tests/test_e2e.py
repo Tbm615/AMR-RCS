@@ -78,7 +78,7 @@ def main() -> int:
 
     def finish():
         results["done"] = True
-        w.ros.disconnect()
+        w.ros.disconnect_robot()
         QTimer.singleShot(300, app.quit)
 
     def tick():
@@ -89,7 +89,7 @@ def main() -> int:
             app.quit()
 
     w.ros.set_profile(prof)
-    w.ros.connect()
+    w.ros.connect_robot()
 
     poll = QTimer()
     poll.timeout.connect(tick)

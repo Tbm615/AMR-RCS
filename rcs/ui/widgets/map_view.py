@@ -136,7 +136,8 @@ class MapView(pg.PlotWidget):
         da = float(msg.get("angle_increment", 0.0))
         rmin = float(msg.get("range_min", 0.0))
         rmax = float(msg.get("range_max", 100.0))
-        arr = np.asarray(ranges, dtype=np.float32)
+        # rosbridge encodes inf/NaN (no return) as JSON null -> None
+        arr = np.array([np.inf if r is None else r for r in ranges], dtype=np.float32)
         angles = a0 + np.arange(arr.size, dtype=np.float32) * da
         mask = np.isfinite(arr) & (arr >= rmin) & (arr <= rmax)
         arr = arr[mask]; angles = angles[mask]
@@ -152,10 +153,12 @@ class MapView(pg.PlotWidget):
         c, s = math.cos(yaw), math.sin(yaw)
         R = np.array([[c, -s], [s, c]], dtype=np.float32)
         pts = corners @ R.T + np.array([x, y])
-        self.robot_body.setData(pts[:, 0], pts[:, 1])
+        # pyqtgraph needs contiguous arrays: column views of pts (strided)
+        # corrupted the heap inside its QPainterPath fast path.
+        self.robot_body.setData(np.ascontiguousarray(pts[:, 0]), np.ascontiguousarray(pts[:, 1]))
         # heading arrow
         self.robot_arrow.setData(
-            [x, x + 0.6 * c], [y, y + 0.6 * s])
+            np.array([x, x + 0.6 * c]), np.array([y, y + 0.6 * s]))
 
     def set_path(self, msg: dict) -> None:
         poses = msg.get("poses", [])
