@@ -166,7 +166,8 @@ class MissionPanel(QWidget):
         self.table.blockSignals(False)
 
     def _emit_wps(self) -> None:
-        pts = [(w.x, w.y) for w in self.cur.waypoints] if self.cur else []
+        pts = ([(w.x, w.y, f"{i + 1}  {w.name}") for i, w in enumerate(self.cur.waypoints)]
+               if self.cur else [])
         self.view.set_waypoints(pts)
         self.waypoints_changed.emit(pts)
 

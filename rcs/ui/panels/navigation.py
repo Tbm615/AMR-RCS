@@ -51,7 +51,7 @@ class NavigationPanel(QWidget):
         side.addStretch(1)
         wrap = QWidget()
         wrap.setLayout(side)
-        wrap.setFixedWidth(240)
+        wrap.setFixedWidth(270)
         root.addWidget(wrap)
 
     _STATUS_TEXT = {

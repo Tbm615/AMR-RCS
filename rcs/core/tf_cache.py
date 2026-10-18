@@ -22,10 +22,11 @@ def _compose(parent_in_root: Pose2, child_in_parent: Pose2) -> Pose2:
     px, py, pt = parent_in_root
     cx, cy, ct = child_in_parent
     cos_p, sin_p = math.cos(pt), math.sin(pt)
+    t = pt + ct
     return (
         px + cx * cos_p - cy * sin_p,
         py + cx * sin_p + cy * cos_p,
-        pt + ct,
+        math.atan2(math.sin(t), math.cos(t)),     # keep yaw in [-pi, pi]
     )
 
 

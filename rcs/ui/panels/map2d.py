@@ -34,11 +34,15 @@ class Map2DPanel(QWidget):
 
         tools = QGroupBox("Tools")
         tv = QVBoxLayout(tools)
-        tv.addWidget(QLabel("Click to set goal (two-click: point + heading)"))
         self.mode = QComboBox()
         self.mode.addItems(["Set goal", "Add waypoint", "Set initial pose"])
         self.mode.currentIndexChanged.connect(self._mode_changed)
         tv.addWidget(self.mode)
+        self.hint = QLabel()
+        self.hint.setWordWrap(True)
+        self.hint.setProperty("muted", True)
+        tv.addWidget(self.hint)
+        self._mode_changed(0)
 
         cancel = QPushButton("Cancel current goal")
         cancel.setProperty("kind", "danger")
@@ -65,8 +69,16 @@ class Map2DPanel(QWidget):
         side.addStretch(1)
         wrap = QWidget()
         wrap.setLayout(side)
-        wrap.setFixedWidth(240)
+        wrap.setFixedWidth(270)
         root.addWidget(wrap)
+
+    _HINTS = {
+        0: "Click where the robot should go, then click again in the direction it should face.",
+        1: "Each click adds a waypoint to the mission open on the Missions page.",
+        2: "Click where the robot really is, then click again in the direction it faces.",
+    }
 
     def _mode_changed(self, idx: int) -> None:
         self.view.set_click_mode({0: "goal", 1: "waypoint", 2: "pose"}[idx])
+        if hasattr(self, "hint"):
+            self.hint.setText(self._HINTS[idx])

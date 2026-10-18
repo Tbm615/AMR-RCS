@@ -78,11 +78,11 @@ class MainWindow(QMainWindow):
         sv.setContentsMargins(0, 12, 0, 12)
         sv.setSpacing(0)
 
-        brand = QLabel("  RCS")
-        brand.setStyleSheet("color:#5a9df6; font-size:20px; font-weight:700; padding:14px 18px;")
+        brand = QLabel("RCS")
+        brand.setStyleSheet("color:#3b82f6; font-size:22px; font-weight:700; padding:10px 19px 0 19px;")
         sv.addWidget(brand)
-        sub = QLabel(f"  v{__version__}"); sub.setProperty("muted", True)
-        sub.setStyleSheet("padding: 0 18px 12px 18px; color:#5b6378;")
+        sub = QLabel(f"Robot Control System · v{__version__}")
+        sub.setStyleSheet("padding: 0 19px 16px 19px; color:#5b6378; font-size:11px;")
         sv.addWidget(sub)
 
         self.nav_group = QButtonGroup(self)
@@ -100,21 +100,22 @@ class MainWindow(QMainWindow):
             ("cam", "Camera"),
             ("logs", "Logs"),
         ]:
-            b = _NavButton("  " + label)
+            b = _NavButton(label)
             self.nav_group.addButton(b)
             sv.addWidget(b)
             self.btns[key] = b
         sv.addStretch(1)
 
         est_frame = QFrame()
-        est_frame.setStyleSheet("background:#140909; border-top:1px solid #2a1a1a;")
+        est_frame.setObjectName("EstopBar")
+        est_frame.setStyleSheet("QFrame#EstopBar { border-top: 1px solid #1a1d26; }")
         esv = QVBoxLayout(est_frame)
         esv.setContentsMargins(10, 10, 10, 10)
         self.sidebar_estop = QPushButton("● E-STOP")
         self.sidebar_estop.setProperty("kind", "danger")
         self.sidebar_estop.setCheckable(True)
         self.sidebar_estop.setMinimumHeight(44)
-        self.sidebar_estop.setStyleSheet("font-weight:700;")
+        self.sidebar_estop.setStyleSheet("font-weight:700; font-size:14px;")
         esv.addWidget(self.sidebar_estop)
         sv.addWidget(est_frame)
 
@@ -308,17 +309,33 @@ class MainWindow(QMainWindow):
         self.p_nav.view.set_occupancy(m)
         self.p_mission.view.set_occupancy(m)
 
+    def _frame_in_map(self, m: dict):
+        """Pose of a message's header frame in the map frame, or None if TF
+        doesn't know it yet (the local costmap usually lives in odom)."""
+        frame = (m.get("header", {}).get("frame_id") or "").lstrip("/")
+        map_frame = self.ros.profile.topics.map_frame if self.ros.profile else "map"
+        if not frame or frame == map_frame:
+            return (0.0, 0.0, 0.0)
+        return self.tf.pose_xyyaw(map_frame, frame)
+
     def _on_global_costmap(self, m: dict) -> None:
-        self.p_map.view.set_global_costmap(m)
-        self.p_nav.view.set_global_costmap(m)
+        pose = self._frame_in_map(m)
+        if pose is None:
+            return
+        self.p_map.view.set_global_costmap(m, pose)
+        self.p_nav.view.set_global_costmap(m, pose)
 
     def _on_local_costmap(self, m: dict) -> None:
-        self.p_map.view.set_local_costmap(m)
-        self.p_nav.view.set_local_costmap(m)
+        pose = self._frame_in_map(m)
+        if pose is None:
+            return
+        self.p_map.view.set_local_costmap(m, pose)
+        self.p_nav.view.set_local_costmap(m, pose)
 
     def _on_plan(self, m: dict) -> None:
         self.p_map.view.set_path(m)
         self.p_nav.view.set_path(m)
+        self.p_mission.view.set_path(m)
         poses = m.get("poses", [])
         self._plan_xy = [(p["pose"]["position"]["x"], p["pose"]["position"]["y"]) for p in poses]
         self._update_progress()
@@ -362,7 +379,9 @@ class MainWindow(QMainWindow):
         self.sidebar_estop.blockSignals(True)
         self.sidebar_estop.setChecked(on)
         self.sidebar_estop.blockSignals(False)
+        self.sidebar_estop.setText("● E-STOP ON\nclick to release" if on else "● E-STOP")
         self.p_teleop.set_estop_state(on)
+        self.p_status.set_estop(on)
         if on:
             self.sb_estop.setText("● estop: ENGAGED")
             self.sb_estop.setStyleSheet("color:#ff6a6a; font-weight:700;")

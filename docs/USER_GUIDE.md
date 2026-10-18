@@ -156,9 +156,12 @@ reconnecting every 2 seconds until you click **Disconnect**.
 All map views share the same controls:
 
 - **Mouse wheel:** zoom. **Left-drag:** pan.
+- **Center on robot** / **Whole map** buttons (top-left of the map). A new
+  map opens fitted; later map updates keep your zoom.
 - Blue rectangle and line: the robot footprint and its heading.
 - Red dots: lidar points. Green line: path planned by Nav2.
-- Orange dots: waypoints of the open mission.
+- Orange dots: waypoints of the open mission, labeled with their order and name.
+- Costmaps (when enabled): magenta = obstacle, blue haze = inflation around it.
 
 ---
 
@@ -303,6 +306,8 @@ waypoint up to 3 times, then stops the mission and says why.
 ## 11. Status, Camera, 3D View and Logs
 
 ![Status page](screenshots/status.png)
+
+![Logs page](screenshots/logs.png)
 
 - **Status:** connection, linear and angular speed (from `/odom`), E-STOP
   state, and the message rate of each topic. A rate of `—` means nothing

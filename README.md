@@ -31,7 +31,8 @@ WebSocket.
 - **Camera** (compressed JPEG), **3D view** (point cloud), **Status**
   (speeds, per-topic rates) and **Logs** (`/rosout`).
 
-Screenshots of every page are in [`docs/screenshots/`](docs/screenshots/).
+Screenshots (taken from the app driving real Nav2 on a simulated robot) are in
+[`docs/screenshots/`](docs/screenshots/) and throughout the [user guide](docs/USER_GUIDE.md).
 
 ## Run from source (developer)
 
@@ -52,7 +53,8 @@ python -m rcs
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
 | `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
 
-All tests run headless with `QT_QPA_PLATFORM=offscreen`.
+All tests run headless with `QT_QPA_PLATFORM=offscreen`. With the sim running,
+`tests/screenshot_live.py` regenerates the screenshots in `docs/screenshots/`.
 
 ### Simulated robot with real Nav2 (`sim/`)
 

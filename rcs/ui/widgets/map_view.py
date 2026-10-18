@@ -9,7 +9,7 @@ from typing import Optional
 
 import numpy as np
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QTransform
 
 import pyqtgraph as pg
 
@@ -38,7 +38,6 @@ class MapView(pg.PlotWidget):
         self.setAspectLocked(True)
         self.getPlotItem().hideButtons()
         self.getPlotItem().setMenuEnabled(False)
-        self.showGrid(x=True, y=True, alpha=0.08)
         self.getAxis("bottom").setPen(pg.mkPen(0.3))
         self.getAxis("left").setPen(pg.mkPen(0.3))
         self.getAxis("bottom").setTextPen(pg.mkPen(0.6))
@@ -97,6 +96,23 @@ class MapView(pg.PlotWidget):
 
         self.scene().sigMouseClicked.connect(self._on_click)
 
+        self._robot_xy = None
+        self._fitted = False
+        # floating view buttons (top-left corner of the map)
+        from PySide6.QtWidgets import QPushButton
+        css = ("QPushButton { background: rgba(21,25,35,215); border: 1px solid #2a3142;"
+               " border-radius: 6px; padding: 5px 10px; font-size: 12px; }"
+               " QPushButton:hover { background: rgba(40,48,68,235); }")
+        self.btn_robot = QPushButton("⌖  Center on robot", self)
+        self.btn_map = QPushButton("⤢  Whole map", self)
+        for i, b in enumerate((self.btn_robot, self.btn_map)):
+            b.setStyleSheet(css)
+            b.setCursor(Qt.PointingHandCursor)
+            b.adjustSize()
+        self.btn_robot.clicked.connect(lambda: self.center_on_robot())
+        self.btn_map.clicked.connect(self.fit_map)
+        self._place_buttons()
+
     # ---- public setters ----
 
     def set_robot_footprint(self, half_length: float, half_width: float) -> None:
@@ -118,11 +134,12 @@ class MapView(pg.PlotWidget):
         """Apply nav_msgs/OccupancyGrid to the base map image."""
         self._apply_grid(msg, self.map_img, update_origin=True)
 
-    def set_global_costmap(self, msg: dict) -> None:
-        self._apply_cost_grid(msg, self.cost_img)
+    def set_global_costmap(self, msg: dict, frame_pose=(0.0, 0.0, 0.0)) -> None:
+        self._apply_cost_grid(msg, self.cost_img, frame_pose)
 
-    def set_local_costmap(self, msg: dict) -> None:
-        self._apply_cost_grid(msg, self.local_cost_img)
+    def set_local_costmap(self, msg: dict, frame_pose=(0.0, 0.0, 0.0)) -> None:
+        """frame_pose: pose of the costmap's frame (usually odom) in the map frame."""
+        self._apply_cost_grid(msg, self.local_cost_img, frame_pose)
 
     def set_scan(self, msg: dict, map_tx: float, map_ty: float, map_yaw: float) -> None:
         """(map_tx, map_ty, map_yaw) is the pose of the LASER frame in the map frame.
@@ -145,7 +162,30 @@ class MapView(pg.PlotWidget):
         ys = arr * np.sin(angles + map_yaw) + map_ty
         self.scan_scatter.setData(xs, ys)
 
+    def resizeEvent(self, ev) -> None:
+        super().resizeEvent(ev)
+        self._place_buttons()
+
+    def _place_buttons(self) -> None:
+        if hasattr(self, "btn_robot"):
+            self.btn_robot.move(60, 10)
+            self.btn_map.move(60 + self.btn_robot.width() + 8, 10)
+
+    def center_on_robot(self, span: float = 10.0) -> None:
+        if self._robot_xy is None:
+            return
+        x, y = self._robot_xy
+        self.getPlotItem().vb.setRange(xRange=(x - span / 2, x + span / 2),
+                                       yRange=(y - span / 2, y + span / 2), padding=0)
+
+    def fit_map(self) -> None:
+        if self.map_img.image is None:
+            return
+        self.getPlotItem().vb.setRange(rect=self.map_img.mapRectToParent(self.map_img.boundingRect()),
+                                       padding=0.02)
+
     def set_robot_pose(self, x: float, y: float, yaw: float) -> None:
+        self._robot_xy = (x, y)
         hl, hw = self._robot_half_l, self._robot_half_w
         corners = np.array([
             [hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw], [hl, hw]
@@ -157,8 +197,9 @@ class MapView(pg.PlotWidget):
         # corrupted the heap inside its QPainterPath fast path.
         self.robot_body.setData(np.ascontiguousarray(pts[:, 0]), np.ascontiguousarray(pts[:, 1]))
         # heading arrow
+        reach = self._robot_half_l + 0.35      # sticks out past the front
         self.robot_arrow.setData(
-            np.array([x, x + 0.6 * c]), np.array([y, y + 0.6 * s]))
+            np.array([x, x + reach * c]), np.array([y, y + reach * s]))
 
     def set_path(self, msg: dict) -> None:
         poses = msg.get("poses", [])
@@ -169,13 +210,26 @@ class MapView(pg.PlotWidget):
         ys = np.array([p["pose"]["position"]["y"] for p in poses], dtype=np.float32)
         self.path_line.setData(xs, ys)
 
-    def set_waypoints(self, pts: list[tuple[float, float]]) -> None:
+    def set_waypoints(self, pts: list) -> None:
+        """pts: (x, y) or (x, y, label) tuples, drawn in order with labels."""
+        for t in getattr(self, "_wp_labels", []):
+            self.removeItem(t)
+        self._wp_labels = []
         if not pts:
             self.wp_scatter.setData([], [])
             return
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
+        xs = [float(p[0]) for p in pts]
+        ys = [float(p[1]) for p in pts]
         self.wp_scatter.setData(xs, ys)
+        for p in pts:
+            if len(p) < 3 or not p[2]:
+                continue
+            t = pg.TextItem(str(p[2]), color="#ffb547", anchor=(-0.15, 0.5),
+                            fill=pg.mkBrush(15, 17, 21, 190))
+            t.setPos(float(p[0]), float(p[1]))
+            t.setZValue(12)
+            self.addItem(t)
+            self._wp_labels.append(t)
 
     def set_goal(self, x: float | None, y: float | None) -> None:
         if x is None:
@@ -204,33 +258,46 @@ class MapView(pg.PlotWidget):
         if update_origin:
             self._map_origin = (ox, oy)
             self._map_res = res
-            # auto-range only the first time, or if nothing has been panned yet
-            if self.getPlotItem().vb.state["autoRange"][0]:
-                self.getPlotItem().vb.autoRange()
+            # fit the first map only; later updates (SLAM) keep the user's view
+            if not self._fitted:
+                self._fitted = True
+                self.getPlotItem().vb.disableAutoRange()
+                self.fit_map()
 
-    def _apply_cost_grid(self, msg: dict, item: pg.ImageItem) -> None:
+    def _apply_cost_grid(self, msg: dict, item: pg.ImageItem, frame_pose=(0.0, 0.0, 0.0)) -> None:
         info = msg.get("info", {})
         w = int(info.get("width", 0))
         h = int(info.get("height", 0))
         if w <= 0 or h <= 0:
             return
         res = float(info.get("resolution", 0.05))
-        origin = info.get("origin", {}).get("position", {})
-        ox = float(origin.get("x", 0.0))
-        oy = float(origin.get("y", 0.0))
+        origin = info.get("origin", {})
+        opos = origin.get("position", {})
+        oq = origin.get("orientation", {})
+        oyaw = math.atan2(2 * (oq.get("w", 1.0) * oq.get("z", 0.0)), 1 - 2 * oq.get("z", 0.0) ** 2)
         data = np.asarray(msg.get("data", []), dtype=np.int8)
         if data.size != w * h:
             return
-        grid = data.reshape((h, w)).astype(np.int16)
-        # colorize: 0 transparent, 100 red
+        c = data.reshape((h, w)).astype(np.int16)
+        # Nav2 costs: 100 lethal, 99 inscribed, 1..98 inflation, 0 free, -1 unknown.
+        # Inflation fades in with cost so low-cost space stays readable;
+        # obstacles (inscribed/lethal) are solid magenta.
         rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        mask = grid > 0
-        rgba[..., 0] = np.clip(grid * 2, 0, 255).astype(np.uint8)
-        rgba[..., 1] = 0
-        rgba[..., 2] = 255 - np.clip(grid * 2, 0, 255).astype(np.uint8)
-        rgba[..., 3] = np.where(mask, 180, 0).astype(np.uint8)
+        infl = (c > 0) & (c < 99)
+        rgba[infl, 0], rgba[infl, 1], rgba[infl, 2] = 70, 130, 255
+        rgba[infl, 3] = np.clip(c[infl] * 1.6, 0, 150).astype(np.uint8)
+        leth = c >= 99
+        rgba[leth] = (230, 40, 140, 210)
         item.setImage(rgba.transpose(1, 0, 2), autoLevels=False)
-        item.setRect(ox, oy, w * res, h * res)
+        # pixel -> costmap frame (origin, resolution) -> map frame (frame_pose)
+        fx, fy, fyaw = frame_pose
+        tr = QTransform()
+        tr.translate(fx, fy)
+        tr.rotate(math.degrees(fyaw))
+        tr.translate(float(opos.get("x", 0.0)), float(opos.get("y", 0.0)))
+        tr.rotate(math.degrees(oyaw))
+        tr.scale(res, res)
+        item.setTransform(tr)
 
     def _on_click(self, ev) -> None:
         if ev.button() != Qt.LeftButton:

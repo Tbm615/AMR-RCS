@@ -4,7 +4,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
-    QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+    QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
     QPushButton, QVBoxLayout, QWidget,
 )
 
@@ -34,22 +34,38 @@ class TeleopPanel(QWidget):
 
     def _build(self) -> None:
         root = QHBoxLayout(self)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(16)
+        root.setContentsMargins(20, 20, 20, 20)
+        root.setSpacing(20)
 
         # --- joystick side ---
-        js_box = QGroupBox("Joystick (drag inside the ring)")
+        js_box = QGroupBox("Drive")
         v = QVBoxLayout(js_box)
+        v.setSpacing(14)
+        hint = QLabel("Press inside the ring and drag. Up = forward, sideways = turn. Release to stop.")
+        hint.setProperty("muted", True)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        v.addStretch(1)
         self.joy = Joystick()
+        self.joy.setFixedSize(340, 340)
         self.joy.moved.connect(self._on_joy)
         self.joy.released.connect(lambda: self._on_joy(0.0, 0.0))
-        v.addWidget(self.joy)
-        self.readout = QLabel("v = 0.00 m/s   ω = 0.00 rad/s")
-        v.addWidget(self.readout, 0, Qt.AlignCenter)
-        root.addWidget(js_box, 2)
+        v.addWidget(self.joy, 0, Qt.AlignHCenter)
+        self.readout = QLabel()
+        self.readout.setAlignment(Qt.AlignCenter)
+        self.readout.setTextFormat(Qt.RichText)
+        v.addWidget(self.readout)
+        v.addStretch(1)
+        root.addWidget(js_box, 1)
+        self._show_readout(0.0, 0.0)
 
         # --- controls side ---
-        side = QVBoxLayout()
+        side_w = QWidget()
+        side_w.setFixedWidth(330)
+        side = QVBoxLayout(side_w)
+        side.setContentsMargins(0, 0, 0, 0)
+        side.setSpacing(14)
 
         limits = QGroupBox("Speed limits")
         f = QFormLayout(limits)
@@ -63,13 +79,25 @@ class TeleopPanel(QWidget):
         f.addRow("Max angular", self.ang)
         side.addWidget(limits)
 
-        kb = QGroupBox("Keyboard (focus must be on this panel)")
-        kbv = QVBoxLayout(kb)
-        kbv.addWidget(QLabel("W / ↑ — forward"))
-        kbv.addWidget(QLabel("S / ↓ — reverse"))
-        kbv.addWidget(QLabel("A / ← — turn left"))
-        kbv.addWidget(QLabel("D / → — turn right"))
-        kbv.addWidget(QLabel("Space — brake"))
+        kb = QGroupBox("Keyboard")
+        kg = QGridLayout(kb)
+        kg.setHorizontalSpacing(12)
+        kg.setVerticalSpacing(8)
+        key_css = ("background:#1f2533; border:1px solid #3a4256; border-bottom-width:2px;"
+                   " border-radius:5px; padding:2px 8px; font-weight:600;")
+        for r, (keys, action) in enumerate([("W  ↑", "forward"), ("S  ↓", "reverse"),
+                                            ("A  ←", "turn left"), ("D  →", "turn right"),
+                                            ("Space", "stop")]):
+            k = QLabel(keys)
+            k.setStyleSheet(key_css)
+            k.setAlignment(Qt.AlignCenter)
+            k.setFixedWidth(64)
+            kg.addWidget(k, r, 0)
+            kg.addWidget(QLabel(action), r, 1)
+        tip = QLabel("Click this page once so it receives the keys.")
+        tip.setProperty("muted", True)
+        tip.setWordWrap(True)
+        kg.addWidget(tip, 5, 0, 1, 2)
         side.addWidget(kb)
 
         self.estop_btn = QPushButton("● E-STOP")
@@ -81,7 +109,7 @@ class TeleopPanel(QWidget):
         side.addWidget(self.estop_btn)
         side.addStretch(1)
 
-        root.addLayout(side, 1)
+        root.addWidget(side_w)
 
     # ---- input handlers ----
 
@@ -148,13 +176,20 @@ class TeleopPanel(QWidget):
             lin = max(-1.0, min(1.0, lin_n)) * self._lin_lim
             ang = max(-1.0, min(1.0, ang_n)) * self._ang_lim
             active = abs(lin) > 1e-4 or abs(ang) > 1e-4
-        self.readout.setText(f"v = {lin:+.2f} m/s   ω = {ang:+.2f} rad/s")
+        self._show_readout(lin, ang)
         if active:
             self._stop_left = self._STOP_TICKS
             self.cmd_vel.emit(lin, ang)
         elif getattr(self, "_stop_left", 0) > 0:
             self._stop_left -= 1
             self.cmd_vel.emit(0.0, 0.0)
+
+    def _show_readout(self, lin: float, ang: float) -> None:
+        self.readout.setText(
+            f'<span style="font-size:22px; font-weight:600;">{lin:+.2f}</span>'
+            f'<span style="color:#8b93a7;"> m/s</span>&nbsp;&nbsp;&nbsp;&nbsp;'
+            f'<span style="font-size:22px; font-weight:600;">{ang:+.2f}</span>'
+            f'<span style="color:#8b93a7;"> rad/s</span>')
 
     def apply_limits(self, lin: float, ang: float) -> None:
         self.lin.setValue(lin)
