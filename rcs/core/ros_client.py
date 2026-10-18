@@ -82,7 +82,6 @@ class RosClient(QObject):
     rosout_received = Signal(object)
     tf_received = Signal(object)
     estop_received = Signal(bool)
-    nav_feedback = Signal(object)
     nav_status = Signal(str)             # "idle" | "active" | "succeeded" | "aborted" | "canceled"
 
     def __init__(self, profile: Optional[RobotProfile] = None, parent=None):

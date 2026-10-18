@@ -76,11 +76,15 @@ class NavigationPanel(QWidget):
         else:
             self.state_lbl.setStyleSheet("color:#8b93a7;")
 
+    def clear_feedback(self) -> None:
+        self.dist_lbl.setText("—")
+        self.eta_lbl.setText("—")
+
     def set_feedback(self, fb: dict) -> None:
         dr = fb.get("distance_remaining")
         nt = fb.get("estimated_time_remaining", {})
         if dr is not None:
             self.dist_lbl.setText(f"{float(dr):.2f} m")
         if nt:
-            sec = float(nt.get("sec", 0))
+            sec = float(nt.get("sec", 0)) + float(nt.get("nanosec", 0)) * 1e-9
             self.eta_lbl.setText(f"{sec:.1f} s")

@@ -1,6 +1,9 @@
 """Main window — sidebar + stacked panels, central controller for signals."""
 from __future__ import annotations
 
+import math
+import time
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
@@ -53,6 +56,9 @@ class MainWindow(QMainWindow):
         self._odom_x = 0.0
         self._odom_y = 0.0
         self._odom_yaw = 0.0
+        self._odom_v = 0.0
+        self._plan_xy: list = []
+        self._nav_state = ""
 
         self._build()
         self._wire()
@@ -188,7 +194,7 @@ class MainWindow(QMainWindow):
         self.ros.cloud_received.connect(self.p_3d.update_pointcloud)
         self.ros.rosout_received.connect(self.p_logs.append_log)
         self.ros.tf_received.connect(self._on_tf)
-        self.ros.nav_feedback.connect(self.p_nav.set_feedback)
+        self.ros.nav_status.connect(self._on_nav_state)
         self.ros.nav_status.connect(self.p_nav.set_status)
         self.ros.estop_received.connect(self._on_estop_remote)
 
@@ -207,6 +213,8 @@ class MainWindow(QMainWindow):
         self.p_mission.cancel_requested.connect(self.ros.cancel_nav_goal)
         self.p_mission.waypoints_changed.connect(self.p_map.view.set_waypoints)
         self.ros.nav_status.connect(self.p_mission.on_nav_status)
+        # "Add waypoint" mode on the 2D Map page appends to the open mission
+        self.p_map.view.pose_clicked.connect(self.p_mission.add_waypoint_at)
         self.p_mission.waypoints_changed.connect(self.p_nav.view.set_waypoints)
 
     def _on_connect(self, profile: RobotProfile) -> None:
@@ -250,6 +258,7 @@ class MainWindow(QMainWindow):
         self._odom_x = float(pos.get("x", 0.0))
         self._odom_y = float(pos.get("y", 0.0))
         self._odom_yaw = quat_to_yaw(p.get("orientation", {}))
+        self._odom_v = float(m.get("twist", {}).get("twist", {}).get("linear", {}).get("x", 0.0))
         self._update_robot_pose()
 
     def _on_tf(self, m: dict) -> None:
@@ -272,7 +281,6 @@ class MainWindow(QMainWindow):
             laser_pose = self.tf.pose_xyyaw(p.odom_frame, p.laser_frame)
         if laser_pose is None:
             # robot URDF usually mounts the lidar forward of base_link
-            import math
             off = self.ros.profile.limits.laser_offset_x
             laser_pose = (
                 pose[0] + off * math.cos(pose[2]),
@@ -286,6 +294,10 @@ class MainWindow(QMainWindow):
         self.p_mission.update_robot_pose(*pose)
         self.p_3d.update_robot_pose(*pose)
         self.sb_pose.setText(f"pose: x={pose[0]:+.2f} y={pose[1]:+.2f} yaw={pose[2]:+.2f}")
+        now = time.monotonic()
+        if now - getattr(self, "_progress_t", 0.0) > 0.2:      # 5 Hz is plenty
+            self._progress_t = now
+            self._update_progress()
 
     def _on_scan(self, m: dict) -> None:
         self.p_map.view.set_scan(m, self._laser_x, self._laser_y, self._laser_yaw)
@@ -307,6 +319,35 @@ class MainWindow(QMainWindow):
     def _on_plan(self, m: dict) -> None:
         self.p_map.view.set_path(m)
         self.p_nav.view.set_path(m)
+        poses = m.get("poses", [])
+        self._plan_xy = [(p["pose"]["position"]["x"], p["pose"]["position"]["y"]) for p in poses]
+        self._update_progress()
+
+    # Distance/time remaining are computed here from /plan and the robot pose:
+    # rosbridge (Humble) cannot subscribe to the NavigateToPose feedback topic.
+    def _on_nav_state(self, state: str) -> None:
+        self._nav_state = state
+        if state not in ("active", "pending"):
+            self._plan_xy = []
+            if state == "succeeded":
+                self.p_nav.set_feedback({"distance_remaining": 0.0,
+                                         "estimated_time_remaining": {"sec": 0}})
+            else:
+                self.p_nav.clear_feedback()
+
+    def _update_progress(self) -> None:
+        if getattr(self, "_nav_state", "") not in ("active", "pending") or not getattr(self, "_plan_xy", None):
+            return
+        pts = self._plan_xy
+        rx, ry = self._robot_x, self._robot_y
+        i = min(range(len(pts)), key=lambda k: (pts[k][0] - rx) ** 2 + (pts[k][1] - ry) ** 2)
+        d = math.hypot(pts[i][0] - rx, pts[i][1] - ry)
+        d += sum(math.hypot(pts[k + 1][0] - pts[k][0], pts[k + 1][1] - pts[k][1])
+                 for k in range(i, len(pts) - 1))
+        v = abs(self._odom_v) if abs(self._odom_v) > 0.05 else (
+            self.ros.profile.limits.max_linear if self.ros.profile else 0.4)
+        self.p_nav.set_feedback({"distance_remaining": d,
+                                 "estimated_time_remaining": {"sec": d / v}})
 
     # ---- E-stop (software, on the client) ----
 

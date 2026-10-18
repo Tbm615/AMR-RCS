@@ -1,33 +1,37 @@
 # RCS — Robot Control System
 
-Standalone desktop operator console for Hinson-class differential-drive AMRs,
-designed to scale to a fleet of similar robots. Runs on Windows and Linux;
-**does not require ROS 2 or Python on the operator PC** — the shipped
-binaries are self-contained.
+Desktop operator console for Hinson-class differential-drive AMRs. Runs on
+**Windows and Linux** as a self-contained app: **no ROS 2 and no Python
+needed on the operator PC**.
 
-The robot runs `rosbridge_server` on port 9090; the app connects over
-WebSocket and does everything else client-side in Python/Qt.
+The robot runs `rosbridge_server` (port 9090); the app connects to it over
+WebSocket.
+
+**→ [Download](https://github.com/b4lanc3/AMR-RCS/releases/latest)**
+&nbsp;·&nbsp; **→ [User guide](docs/USER_GUIDE.md)**
 
 ![2D map view with occupancy grid, scan, planned path and robot pose](docs/screenshots/map.png)
 
-See `docs/screenshots/` for all panels: connection, status, teleop, map,
-navigation, mission editor, camera, logs.
-
 ## Features
 
-- Multi-robot profile manager (add/edit/select, persisted to disk).
-- Live connection health with reconnect.
-- Teleop: virtual joystick, keyboard (W/A/S/D or arrows), speed limits.
-- Latched E-stop that beats any teleop stream.
-- Status: battery (if available), velocities, topic rates, TF freshness.
-- 2D map view: `OccupancyGrid` + live `/scan_filtered` overlay + robot pose
-  from TF, click-to-send `NavigateToPose` goal.
-- 3D view: camera point cloud + robot footprint.
-- Nav view: Nav2 global/local costmaps, planned path, controller status.
-- Missions: ordered waypoints with per-point tolerance and dwell;
-  optional **loop route**; run/pause/stop; "set here" from current pose.
-- Camera: compressed image stream (JPEG) from `/camera/color/image_raw/compressed`.
-- Logs/diagnostics panel.
+- **Robots:** profiles with address, topic and frame names and speed limits;
+  auto-reconnect.
+- **Teleop:** on-screen joystick or keyboard (W/A/S/D, arrows), with speed
+  limits. Publishes only while you drive, so it never blocks Nav2.
+- **Software E-STOP:** cancels the Nav2 goal and the mission, streams zero
+  velocity and publishes `/amr/estop` ([limits](#safety-notes)).
+- **2D map:** occupancy grid, lidar points (aligned through `/tf_static`),
+  robot footprint, planned path, global/local costmaps. Click to set the
+  initial pose, send a goal (position + heading) or add waypoints.
+- **Navigation:** live Nav2 state (pending, navigating, reached, canceled,
+  aborted, no response), distance and time remaining, cancel.
+- **Missions:** ordered waypoints (checkpoints) with tolerance and dwell,
+  loop routes, play / pause / stop; automatic retry when Nav2 drops or
+  aborts a goal.
+- **Camera** (compressed JPEG), **3D view** (point cloud), **Status**
+  (speeds, per-topic rates) and **Logs** (`/rosout`).
+
+Screenshots of every page are in [`docs/screenshots/`](docs/screenshots/).
 
 ## Run from source (developer)
 
@@ -46,7 +50,7 @@ python -m rcs
 | `tests/test_features.py` | nothing | map/scan/path rendering, PointCloud2 and JPEG decoding, TF chains, mission executor incl. retries (31 checks) |
 | `tests/test_e2e.py` | nothing (built-in mock rosbridge) | the app connects, subscribes, streams teleop, publishes goals |
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
-| `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (26 checks) |
+| `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
 
 All tests run headless with `QT_QPA_PLATFORM=offscreen`.
 

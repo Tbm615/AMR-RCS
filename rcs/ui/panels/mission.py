@@ -229,6 +229,9 @@ class MissionPanel(QWidget):
         self.cur.waypoints.append(wp)
         self._save(); self._refresh_table(); self._emit_wps()
 
+    def add_waypoint_at(self, x: float, y: float) -> None:
+        self._on_map_click(x, y)
+
     def _on_map_click(self, x: float, y: float) -> None:
         if not self.cur:
             return

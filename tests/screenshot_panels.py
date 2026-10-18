@@ -174,6 +174,7 @@ def main() -> int:
         w.missions.upsert(m)
         print("STEP: mission upserted"); sys.stdout.flush()
         w.p_mission._reload_missions()
+        w.p_mission._set_combo_to(m.id)
         print("STEP: mission reloaded"); sys.stdout.flush()
 
         # camera + logs (skip 3d — segfaults on offscreen when grabbing)

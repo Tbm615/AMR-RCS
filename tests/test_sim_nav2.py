@@ -149,6 +149,16 @@ def main() -> int:
         print(f"       attempt {attempt}: {statuses} -> resend", flush=True)
     check("goal acknowledged by Nav2 (pending -> active)",
           statuses[:1] == ["pending"] and "active" in statuses, f"statuses={statuses[:4]}")
+    def dist_shown():
+        t = w.p_nav.dist_lbl.text()
+        return float(t[:-2]) if t.endswith(" m") else None
+    has_dist = wait_until(lambda: dist_shown() is not None and dist_shown() > 1.0, 30)
+    d1 = dist_shown()
+    pump(3.0)
+    d2 = dist_shown()
+    check("distance remaining shown and decreasing",
+          has_dist and d2 is not None and d2 < d1,
+          f"{d1} m -> {d2} m, eta={w.p_nav.eta_lbl.text()}")
     arrived = wait_until(lambda: "succeeded" in statuses, 150)
     check("Nav2 reported succeeded", arrived, f"statuses={sorted(set(statuses))}")
     check("robot at goal A (<0.3 m)", dist_to(*GOAL_A[:2]) < 0.3,
@@ -197,6 +207,13 @@ def main() -> int:
     w.missions.upsert(m)
     w.p_mission._reload_missions()
     w.p_mission._set_combo_to(m.id)
+    n_before = len(w.p_mission.cur.waypoints)
+    w.p_map.view.set_click_mode("waypoint")
+    w.p_map.view.pose_clicked.emit(1.0, 2.0)
+    check("'Add waypoint' on the 2D Map page adds to the open mission",
+          len(w.p_mission.cur.waypoints) == n_before + 1)
+    w.p_mission.cur.waypoints.pop()
+    w.p_mission._save(); w.p_mission._refresh_table(); w.p_mission._emit_wps()
     dispatched = []
     w.p_mission.goal_requested.connect(lambda x, y, yaw: dispatched.append((round(x, 2), round(y, 2), pose())))
     w.p_mission.play_btn.click()
