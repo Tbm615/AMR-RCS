@@ -14,6 +14,9 @@ jobs:
       matrix:
         os: [ubuntu-22.04, windows-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONUNBUFFERED: "1"
