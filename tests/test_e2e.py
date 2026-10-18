@@ -144,4 +144,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    rc = main()
+    sys.stdout.flush(); sys.stderr.flush()
+    # Skip interpreter teardown: Qt/PySide object destruction order at exit
+    # can segfault after all checks already ran.
+    os._exit(rc)

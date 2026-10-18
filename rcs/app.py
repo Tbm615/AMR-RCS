@@ -22,7 +22,7 @@ if sys.stdin is None:
     sys.stdin = _io.StringIO()
 
 try:
-    _logf = open(os.path.join(tempfile.gettempdir(), "rcs.log"), "a", buffering=1)
+    _logf = open(os.path.join(tempfile.gettempdir(), "rcs.log"), "a", buffering=1, encoding="utf-8")
     _logf.write(f"\n--- RCS launched pid={os.getpid()} argv={sys.argv!r} ---\n")
 
     class _Tee:
