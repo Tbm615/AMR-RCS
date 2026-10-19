@@ -16,6 +16,9 @@ WebSocket.
 
 - **Robots:** profiles with address, topic and frame names and speed limits;
   auto-reconnect.
+- **Robot programs:** start and stop bringup and Nav2 on the robot from the
+  app, on a saved map or building a new one with SLAM; save maps. No
+  terminal on the robot.
 - **Teleop:** on-screen joystick or keyboard (W/A/S/D, arrows), with speed
   limits. Publishes only while you drive, so it never blocks Nav2.
 - **Software E-STOP:** cancels the Nav2 goal and the mission, streams zero
@@ -51,6 +54,7 @@ python -m rcs
 |---|---|---|
 | `tests/test_features.py` | nothing | map/scan/path rendering, PointCloud2 and JPEG decoding, TF chains, mission executor incl. retries (31 checks) |
 | `tests/test_e2e.py` | nothing (built-in mock rosbridge) | the app connects, subscribes, streams teleop, publishes goals |
+| `tests/test_robot_page.py` | nothing (mock rosbridge with a fake launcher) | Robot programs page: start/stop bringup and Nav2, SLAM, save map (22 checks) |
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
 | `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
 
@@ -104,14 +108,10 @@ Download the archives from the run's Artifacts section on the Actions tab.
 
 ## Robot side
 
-On the robot PC, install and launch `rosbridge_server`:
-
-```bash
-sudo apt install ros-humble-rosbridge-suite
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
-```
-
-See `scripts/robot_setup_rosbridge.md` for a systemd unit template.
+The robot runs `rosbridge_server` and the small **RCS launcher**
+([`robot/`](robot/)), both started at boot by a crontab entry. After that
+one-time setup, the operator powers on the robot and starts bringup and Nav2
+from the app. Setup: [`robot/README.md`](robot/README.md).
 
 ## Safety notes
 

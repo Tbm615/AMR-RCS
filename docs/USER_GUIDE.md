@@ -13,15 +13,16 @@ through `rosbridge_server`, which runs on the robot.
 - [3. Install the app](#3-install-the-app)
 - [4. First connection](#4-first-connection)
 - [5. The main window](#5-the-main-window)
-- [6. Driving by hand (Teleop)](#6-driving-by-hand-teleop)
-- [7. E-STOP](#7-e-stop)
-- [8. Map, localization and goals (2D Map)](#8-map-localization-and-goals-2d-map)
-- [9. Navigation page](#9-navigation-page)
-- [10. Missions, checkpoints and loop routes](#10-missions-checkpoints-and-loop-routes)
-- [11. Status, Camera, 3D View and Logs](#11-status-camera-3d-view-and-logs)
-- [12. Several robots](#12-several-robots)
-- [13. Settings files and advanced options](#13-settings-files-and-advanced-options)
-- [14. Troubleshooting](#14-troubleshooting)
+- [6. Robot programs: start bringup and Nav2](#6-robot-programs-start-bringup-and-nav2)
+- [7. Driving by hand (Teleop)](#7-driving-by-hand-teleop)
+- [8. E-STOP](#8-e-stop)
+- [9. Map, localization and goals (2D Map)](#9-map-localization-and-goals-2d-map)
+- [10. Navigation page](#10-navigation-page)
+- [11. Missions, checkpoints and loop routes](#11-missions-checkpoints-and-loop-routes)
+- [12. Status, Camera, 3D View and Logs](#12-status-camera-3d-view-and-logs)
+- [13. Several robots](#13-several-robots)
+- [14. Settings files and advanced options](#14-settings-files-and-advanced-options)
+- [15. Troubleshooting](#15-troubleshooting)
 
 ---
 
@@ -58,25 +59,30 @@ What the app uses on the robot (defaults, all changeable per robot):
 
 ## 2. Prepare the robot (one time)
 
-On the robot PC:
+The robot needs two things for RCS: `rosbridge_server` (the app connects to
+it) and the **RCS launcher** (lets the app start and stop bringup and Nav2,
+see [section 6](#6-robot-programs-start-bringup-and-nav2)). Both are in the
+[`robot/`](../robot/) folder of this repository and start by themselves every
+time the robot boots.
+
+On the robot PC, once:
 
 ```bash
-sudo apt install ros-humble-rosbridge-suite
+sudo apt install ros-humble-rosbridge-suite ros-humble-compressed-image-transport
+# copy the robot/ folder of this repository next to the workspace, e.g.:
+mkdir -p ~/tbm_test/rcs_robot && cp robot/* ~/tbm_test/rcs_robot/
+chmod +x ~/tbm_test/rcs_robot/*
+# start both at every boot (user crontab, no sudo needed):
+(crontab -l 2>/dev/null; echo "@reboot sleep 10 && $HOME/tbm_test/rcs_robot/start_rcs_robot.sh") | crontab -
+# start them now without rebooting:
+nohup setsid ~/tbm_test/rcs_robot/start_rcs_robot.sh >/dev/null 2>&1 &
 ```
 
-Start it **in the same ROS environment as the robot stack** (same
-`RMW_IMPLEMENTATION`, `ROS_DOMAIN_ID` and `CYCLONEDDS_URI`), otherwise it
-will not see the robot's topics:
-
-```bash
-source /opt/ros/humble/setup.bash
-source ~/AMR_WS/first/install/setup.bash
-ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
-```
-
-To start it automatically at boot, see
-[`scripts/robot_setup_rosbridge.md`](../scripts/robot_setup_rosbridge.md):
-a crontab entry (no sudo needed) or a systemd unit.
+`start_rcs_robot.sh` uses the robot's ROS settings (CycloneDDS, domain 0, the
+workspace's `cyclonedds.xml`) and restarts rosbridge or the launcher if one of
+them exits. If your workspace is not `~/tbm_test`, set `RCS_WS` at the top
+of the script. Details, logs and how to remove it:
+[`robot/README.md`](../robot/README.md).
 
 Allow TCP port 9090 from the operator network if a firewall is active:
 
@@ -84,32 +90,11 @@ Allow TCP port 9090 from the operator network if a firewall is active:
 sudo ufw allow from 192.168.10.0/24 to any port 9090 proto tcp
 ```
 
-Optional, for the Camera page: install the compressed image transport so the
-camera publishes `/camera/color/image_raw/compressed`:
+`ros-humble-compressed-image-transport` makes the camera publish
+`/camera/color/image_raw/compressed`, which the Camera page shows.
 
-```bash
-sudo apt install ros-humble-compressed-image-transport
-```
-
-Then run the robot stack as usual (bringup, and Nav2 when you want to
-navigate). RCS does not start or stop ROS nodes on the robot.
-
-**Navigating where there is no saved map yet.** Run SLAM instead of AMCL and
-start Nav2 without its map server. The map then grows on the 2D Map page as
-the robot drives, and goals work right away (no initial pose needed):
-
-```bash
-ros2 launch bringup bringup.launch.py
-ros2 launch slam slamtoolbox.launch.xml
-ros2 launch nav2_bringup navigation_launch.py \
-    params_file:=$(ros2 pkg prefix navigation)/share/navigation/config/nav2_smac_mppi.yml
-ros2 run navigation cbf_safety_filter.py --ros-args \
-    --params-file $(ros2 pkg prefix navigation)/share/navigation/config/cbf_params.yaml \
-    -r cmd_vel_raw:=/cmd_vel -r cmd_vel:=/cmd_vel_safe -r scan:=/scan_filtered -r odom:=/odom
-```
-
-This is the same Nav2 and CBF chain as `robot_navigation.launch.py`, with
-slam_toolbox in place of AMCL and the map server.
+After that, everything is done from the app: power on the robot, connect,
+and start bringup and Nav2 on the **Robot programs** page.
 
 ---
 
@@ -165,7 +150,7 @@ reconnecting every 2 seconds until you click **Disconnect**.
 
 ## 5. The main window
 
-- **Sidebar (left):** pages: Connection, Status, Teleop, 2D Map,
+- **Sidebar (left):** pages: Connection, Robot programs, Status, Teleop, 2D Map,
   Navigation, Missions, 3D View, Camera, Logs. The red **● E-STOP** button
   at the bottom is always visible.
 - **Status bar (bottom):** active robot and address, connection state,
@@ -183,7 +168,49 @@ All map views share the same controls:
 
 ---
 
-## 6. Driving by hand (Teleop)
+## 6. Robot programs: start bringup and Nav2
+
+![Robot programs page](screenshots/robot.png)
+
+This page starts and stops the ROS programs on the robot, so you do not need
+a terminal on the robot. It needs the RCS launcher installed once
+([section 2](#2-prepare-the-robot-one-time)); the banner at the top says
+**Robot launcher online** when it answers.
+
+**1 · Robot base (bringup).** Motor drives, lidar, scan filter and camera.
+Click **Start**; it shows *running* once odometry and the lidar are up
+(a few seconds). Every other page needs it. **Stop** disables the motors and
+stops navigation too (you are asked to confirm).
+
+**2 · Navigation (Nav2).** Planner, controller and the CBF safety filter.
+Choose how the robot knows where it is, then click **Start**:
+
+- **Use a saved map:** pick a map from the list (the workspace's maps and the
+  ones you saved). After it starts, set the robot's position on the 2D Map
+  page (**Set initial pose**): **Open 2D Map** takes you there.
+- **Build a new map while driving (SLAM):** the map starts empty and grows on
+  the 2D Map page as the robot moves (Teleop or goals). No initial pose
+  needed; goals work right away inside the mapped area.
+
+While navigation runs, the button reads **Restart**: change the map or the
+mode and click it to switch.
+
+**3 · Save the map.** Type a name (letters, digits, `-`, `_`) and click
+**Save map**. The map is saved on the robot (`~/tbm_test/maps/`) and appears
+under *Use a saved map*, for this and every later session.
+
+Each stack shows its state (stopped, starting…, running, stopping…,
+failed) and how long it has been in it. **Show log** shows the last lines of
+its output; it opens by itself when a stack fails. Programs started by hand
+on the robot (from a terminal) are shown as *running (started outside the
+app)* and must be stopped where they were started.
+
+The full logs are on the robot in `~/tbm_test/runlog/rcs_bringup.log` and
+`rcs_nav.log`.
+
+---
+
+## 7. Driving by hand (Teleop)
 
 ![Teleop page](screenshots/teleop.png)
 
@@ -203,7 +230,7 @@ filter: watch the robot while driving.
 
 ---
 
-## 7. E-STOP
+## 8. E-STOP
 
 Click **● E-STOP** (sidebar or Teleop page). While engaged:
 
@@ -222,7 +249,7 @@ Click the button again to release it. If another console publishes
 
 ---
 
-## 8. Map, localization and goals (2D Map)
+## 9. Map, localization and goals (2D Map)
 
 ![2D Map page](screenshots/map.png)
 
@@ -257,7 +284,7 @@ map).
 
 ---
 
-## 9. Navigation page
+## 10. Navigation page
 
 ![Navigation page](screenshots/nav.png)
 
@@ -279,7 +306,7 @@ and cancel from this page too.
 
 ---
 
-## 10. Missions, checkpoints and loop routes
+## 11. Missions, checkpoints and loop routes
 
 ![Missions page](screenshots/mission.png)
 
@@ -321,7 +348,7 @@ waypoint up to 3 times, then stops the mission and says why.
 
 ---
 
-## 11. Status, Camera, 3D View and Logs
+## 12. Status, Camera, 3D View and Logs
 
 ![Status page](screenshots/status.png)
 
@@ -343,7 +370,7 @@ waypoint up to 3 times, then stops the mission and says why.
 
 ---
 
-## 12. Several robots
+## 13. Several robots
 
 Each robot is a profile on the **Connection** page.
 
@@ -356,7 +383,7 @@ per robot; give them clear names if robots share a site.
 
 ---
 
-## 13. Settings files and advanced options
+## 14. Settings files and advanced options
 
 | | Linux | Windows |
 |---|---|---|
@@ -386,7 +413,7 @@ rcs --host 192.168.10.10:9090 --autoconnect
 
 ---
 
-## 14. Troubleshooting
+## 15. Troubleshooting
 
 **Cannot connect / keeps reconnecting**
 - Is rosbridge running on the robot? From the operator PC,
@@ -396,7 +423,17 @@ rcs --host 192.168.10.10:9090 --autoconnect
 - Is the host/port right on the Connection page? Did you click **Save
   changes**?
 
+**Robot programs page says "The robot does not answer"**
+- The RCS launcher is not running on the robot. Install it (section 2). Its
+  log is `~/tbm_test/runlog/rcs_launcher.log` on the robot.
+
+**Bringup or navigation shows "failed"**
+- Open **Show log** on that stack: the last lines usually name the problem
+  (lidar not reachable, motor driver USB adapter missing, map file not found).
+- Fix it and click **Start** again.
+
 **Connected, but no map, scan or pose**
+- Is bringup running? See the **Robot programs** page.
 - Open **Status**: topics with `—` are not arriving.
 - rosbridge must run with the same DDS settings as the robot stack
   (section 2). Restart it from a shell where `ros2 topic list` shows the
@@ -404,11 +441,11 @@ rcs --host 192.168.10.10:9090 --autoconnect
 - The topic names on the Connection page must match the robot.
 
 **Lidar points do not match the walls**
-- The robot is not localized: use **Set initial pose** (section 8).
+- The robot is not localized: use **Set initial pose** (section 9).
 
 **Goal shows "no response from Nav2"**
-- Start Nav2 on the robot, then set the initial pose. Nav2 only finishes
-  starting once AMCL has a pose.
+- Start navigation on the **Robot programs** page. With a saved map, set the
+  initial pose: Nav2 only finishes starting once AMCL has a pose.
 
 **The robot reaches the goal but faces the wrong way**
 - In Nav2's planner settings (`nav2_smac_mppi.yml`, `GridBased`),
@@ -435,5 +472,5 @@ rcs --host 192.168.10.10:9090 --autoconnect
   that `/camera/color/image_raw/compressed` exists.
 
 **The app closes unexpectedly**
-- Look at the app log (section 13). The console build on Windows shows the
+- Look at the app log (section 14). The console build on Windows shows the
   same output live.

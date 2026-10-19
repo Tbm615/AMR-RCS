@@ -49,6 +49,9 @@ jobs:
       - name: End-to-end test (source) against mock rosbridge
         run: python tests/test_e2e.py
 
+      - name: Robot programs page against mock launcher
+        run: python tests/test_robot_page.py
+
       - name: Build (console)
         run: python build.py
 

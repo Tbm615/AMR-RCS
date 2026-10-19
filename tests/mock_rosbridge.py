@@ -39,6 +39,49 @@ class Hub:
 HUB = Hub()
 
 
+class FakeLauncher:
+    """Stands in for robot/rcs_launcher.py: same JSON protocol, instant state changes."""
+
+    def __init__(self) -> None:
+        self.stacks = {k: {"state": "stopped", "detail": "", "since": time.time(), "args": {}, "log": []}
+                       for k in ("bringup", "nav")}
+        self.maps = ["map_a", "map_b"]
+        self.result = {"id": "", "ok": True, "msg": ""}
+
+    def _set(self, k, state, args=None):
+        self.stacks[k].update(state=state, since=time.time(), args=args or {})
+
+    def command(self, cmd: dict) -> None:
+        op, k = cmd.get("op"), cmd.get("stack")
+        ok, msg = True, ""
+        if op == "start" and k == "bringup":
+            self._set("bringup", "running"); msg = "bringup starting"
+        elif op == "start" and k == "nav":
+            if self.stacks["bringup"]["state"] != "running":
+                ok, msg = False, "start bringup first"
+            else:
+                self._set("nav", "running", {kk: v for kk, v in cmd.items() if kk in ("mode", "map")})
+                msg = "navigation starting"
+        elif op == "stop":
+            if k == "bringup":
+                self._set("nav", "stopped")
+            self._set(k, "stopped"); msg = f"{k} stopped"
+        elif op == "save_map":
+            if self.stacks["nav"]["state"] != "running":
+                ok, msg = False, "no /map to save (start navigation first)"
+            else:
+                self.maps = sorted(set(self.maps) | {cmd.get("name", "")}); msg = f"map saved as {cmd.get('name')}"
+        self.result = {"id": cmd.get("id", ""), "ok": ok, "msg": msg}
+
+    def state_msg(self) -> dict:
+        return {"op": "publish", "topic": "/rcs/launcher/state",
+                "msg": {"data": json.dumps({"version": 1, "time": time.time(), "stacks": self.stacks,
+                                            "maps": self.maps, "busy": "", "result": self.result})}}
+
+
+LAUNCHER = FakeLauncher()
+
+
 async def send(ws, obj) -> None:
     await ws.send(json.dumps(obj))
 
@@ -150,6 +193,8 @@ async def ticker():
             msgs.append(_scan(now))
         if tick % 20 == 0:
             msgs.append(_oc_grid(now))
+        if tick % 10 == 0:
+            msgs.append(LAUNCHER.state_msg())
         for topic, m in [(mm["topic"], mm) for mm in msgs]:
             subs = HUB.subs_by_topic.get(topic, set())
             for ws in list(subs):
@@ -184,6 +229,11 @@ async def handle(ws):
                 HUB.advertised_by_client.pop(m.get("topic", ""), None)
             elif op == "publish":
                 HUB.record_publish({"topic": m["topic"], "msg": m.get("msg", {}), "t": time.time()})
+                if m["topic"] == "/rcs/launcher/cmd":
+                    try:
+                        LAUNCHER.command(json.loads(m.get("msg", {}).get("data", "")))
+                    except ValueError:
+                        pass
             elif op == "call_service":
                 await send(ws, {"op": "service_response",
                                 "service": m.get("service"),

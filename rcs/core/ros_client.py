@@ -7,9 +7,11 @@ operator PC does not need ROS 2 installed.
 """
 from __future__ import annotations
 
+import json
 import math
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
@@ -22,6 +24,10 @@ except ImportError:  # pragma: no cover
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from .profile import RobotProfile
+
+# Topics of the robot-side launcher (robot/rcs_launcher.py).
+LAUNCHER_CMD = "/rcs/launcher/cmd"
+LAUNCHER_STATE = "/rcs/launcher/state"
 
 
 # ----- small helpers ---------------------------------------------------------
@@ -82,6 +88,7 @@ class RosClient(QObject):
     rosout_received = Signal(object)
     tf_received = Signal(object)
     estop_received = Signal(bool)
+    launcher_state = Signal(object)      # dict from the robot's rcs_launcher.py
     nav_status = Signal(str)             # "idle" | "active" | "succeeded" | "aborted" | "canceled"
 
     def __init__(self, profile: Optional[RobotProfile] = None, parent=None):
@@ -258,9 +265,28 @@ class RosClient(QObject):
         # ever arrive on /tf_static.
         self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage",
                         lambda m: self._post("tf_received", m))
+        self._subscribe(LAUNCHER_STATE, "std_msgs/msg/String", self._on_launcher_state)
         if t.nav_action:
             self._subscribe(f"{t.nav_action}/_action/status", "action_msgs/msg/GoalStatusArray",
                             self._on_nav_status)
+
+    def _on_launcher_state(self, m: dict) -> None:
+        try:
+            st = json.loads(m.get("data", ""))
+        except (TypeError, ValueError):
+            return
+        if isinstance(st, dict):
+            self._mark("launcher")
+            self._post("launcher_state", st, coalesce=True)
+
+    def send_launcher_cmd(self, op: str, **kw) -> str:
+        """Ask the robot's launcher to start/stop a stack or save the map.
+        Returns the command id, echoed back in launcher_state["result"]."""
+        cmd_id = uuid.uuid4().hex[:12]
+        pub = self._advertise(LAUNCHER_CMD, "std_msgs/msg/String")
+        if pub is not None:
+            pub.publish(roslibpy.Message({"data": json.dumps({"id": cmd_id, "op": op, **kw})}))
+        return cmd_id
 
     def set_stream_active(self, key: str, on: bool) -> None:
         """Subscribe to (on) or drop (off) an on-demand stream: "image" or "cloud"."""

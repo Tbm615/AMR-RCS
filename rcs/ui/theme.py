@@ -100,6 +100,13 @@ QScrollBar::handle:horizontal {{ background: #2a3142; border-radius: 5px; min-wi
 QCheckBox {{ spacing: 8px; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid #3a4256; background: {FIELD}; border-radius: 4px; }}
 QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url("{CHECK}"); }}
+QRadioButton {{ spacing: 8px; }}
+QRadioButton::indicator {{ width: 14px; height: 14px; border: 1px solid #3a4256; background: {FIELD}; border-radius: 8px; }}
+QRadioButton::indicator:checked {{ border-color: {ACCENT};
+    background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                                stop:0 {ACCENT}, stop:0.5 {ACCENT}, stop:0.6 {FIELD}, stop:1 {FIELD}); }}
+QPushButton[kind="primary"]:disabled, QPushButton[kind="success"]:disabled,
+QPushButton[kind="danger"]:disabled {{ color: #5b6378; background: #161a24; border-color: {BORDER}; }}
 """
 
 

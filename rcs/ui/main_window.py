@@ -23,6 +23,7 @@ from .panels.map2d import Map2DPanel
 from .panels.mission import MissionPanel
 from .panels.navigation import NavigationPanel
 from .panels.status import StatusPanel
+from .panels.robot import RobotPanel
 from .panels.teleop import TeleopPanel
 from .panels.view3d import View3DPanel
 
@@ -91,6 +92,7 @@ class MainWindow(QMainWindow):
         self.btns = {}
         for key, label in [
             ("conn", "Connection"),
+            ("robot", "Robot programs"),
             ("status", "Status"),
             ("teleop", "Teleop"),
             ("map", "2D Map"),
@@ -127,6 +129,7 @@ class MainWindow(QMainWindow):
 
         # instantiate panels
         self.p_conn = ConnectionPanel(self.profiles)
+        self.p_robot = RobotPanel(self.ros)
         self.p_status = StatusPanel(self.ros)
         self.p_teleop = TeleopPanel()
         self.p_map = Map2DPanel()
@@ -138,6 +141,7 @@ class MainWindow(QMainWindow):
 
         self._pages = {
             "conn": self.p_conn,
+            "robot": self.p_robot,
             "status": self.p_status,
             "teleop": self.p_teleop,
             "map": self.p_map,
@@ -204,6 +208,8 @@ class MainWindow(QMainWindow):
         self.ros.nav_status.connect(self.p_nav.set_status)
         self.ros.estop_received.connect(self._on_estop_remote)
 
+        self.p_robot.open_page.connect(lambda k: self.btns[k].click())
+
         # teleop → ros
         self.p_teleop.cmd_vel.connect(self.ros.publish_cmd_vel)
         self.p_teleop.estop_changed.connect(self._set_estop)
@@ -247,11 +253,13 @@ class MainWindow(QMainWindow):
         self.sb_conn.setText("● connected"); self.sb_conn.setStyleSheet("color:#39d98a;")
         self.p_conn.set_connected(True, self.ros.profile.ws_url if self.ros.profile else "")
         self.p_status.set_connected(True)
+        self.p_robot.set_connected(True)
 
     def _on_ros_disconnected(self) -> None:
         self.sb_conn.setText("● offline"); self.sb_conn.setStyleSheet("color:#ff6a6a;")
         self.p_conn.set_connected(False)
         self.p_status.set_connected(False)
+        self.p_robot.set_connected(False)
 
     def _on_ros_error(self, msg: str) -> None:
         self.p_conn.set_connected(False, msg)
