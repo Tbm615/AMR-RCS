@@ -74,8 +74,9 @@ source ~/AMR_WS/first/install/setup.bash
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090
 ```
 
-To start it automatically at boot, use the systemd unit in
-[`scripts/robot_setup_rosbridge.md`](../scripts/robot_setup_rosbridge.md).
+To start it automatically at boot, see
+[`scripts/robot_setup_rosbridge.md`](../scripts/robot_setup_rosbridge.md):
+a crontab entry (no sudo needed) or a systemd unit.
 
 Allow TCP port 9090 from the operator network if a firewall is active:
 

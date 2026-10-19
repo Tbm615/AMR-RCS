@@ -24,7 +24,23 @@ The console should log `Rosbridge WebSocket server started on port 9090`.
 Then on the operator PC: open RCS → Connection → set Host to the robot's
 LAN IP (e.g. `192.168.10.10`) → Connect.
 
-## systemd unit (auto-start)
+## Auto-start without sudo (what the Hinson robot uses)
+
+[`start_rosbridge.sh`](start_rosbridge.sh) runs rosbridge in the robot's ROS
+environment (CycloneDDS, domain 0, the workspace's `cyclonedds.xml`) and
+restarts it if it exits. A user crontab entry starts it at boot:
+
+```bash
+cp start_rosbridge.sh ~/tbm_test/ && chmod +x ~/tbm_test/start_rosbridge.sh
+(crontab -l 2>/dev/null; echo "@reboot sleep 10 && /home/iop/tbm_test/start_rosbridge.sh") | crontab -
+```
+
+Edit the workspace paths in the script if yours differ. The log is
+`~/tbm_test/runlog/rosbridge.log`. To stop it until the next boot:
+`pkill -f start_rosbridge.sh; pkill -f rosbridge_websocket`. To remove it,
+delete the line with `crontab -e`.
+
+## systemd unit (auto-start, needs sudo)
 
 Create `/etc/systemd/system/rosbridge.service`:
 
