@@ -110,6 +110,9 @@ class RosClient(QObject):
         self._seen_goals: set = set()
         self._goal_acked = True
         self._nav_goal_id: Optional[str] = None
+        # Camera and point cloud are heavy (the depth cloud is ~1 MB/frame):
+        # only subscribed while a page showing them is open.
+        self._streams_on: Dict[str, bool] = {"image": False, "cloud": False}
 
     # ---- thread hand-off ----
 
@@ -227,7 +230,8 @@ class RosClient(QObject):
             return
         t = self.profile.topics
         self._subscribe(t.odom, "nav_msgs/msg/Odometry",
-                        lambda m: (self._mark("odom"), self._post("odom_received", m, coalesce=True)))
+                        lambda m: (self._mark("odom"), self._post("odom_received", m, coalesce=True)),
+                        throttle_rate=50)
         self._subscribe(t.scan, "sensor_msgs/msg/LaserScan",
                         lambda m: (self._mark("scan"), self._post("scan_received", m, coalesce=True)),
                         throttle_rate=100)
@@ -242,13 +246,7 @@ class RosClient(QObject):
                         throttle_rate=500)
         self._subscribe(t.plan, "nav_msgs/msg/Path",
                         lambda m: (self._mark("plan"), self._post("plan_received", m, coalesce=True)))
-        self._subscribe(t.camera_image, "sensor_msgs/msg/CompressedImage",
-                        lambda m: (self._mark("image"), self._on_image(m)),
-                        throttle_rate=self.profile.limits.image_throttle_ms)
-        if t.camera_cloud:
-            self._subscribe(t.camera_cloud, "sensor_msgs/msg/PointCloud2",
-                            lambda m: (self._mark("cloud"), self._post("cloud_received", m, coalesce=True)),
-                            throttle_rate=self.profile.limits.cloud_throttle_ms)
+        self._sync_streams()
         self._subscribe(t.rosout, "rcl_interfaces/msg/Log",
                         lambda m: (self._mark("rosout"), self._post("rosout_received", m)))
         self._subscribe(t.estop_topic, "std_msgs/msg/Bool",
@@ -263,6 +261,37 @@ class RosClient(QObject):
         if t.nav_action:
             self._subscribe(f"{t.nav_action}/_action/status", "action_msgs/msg/GoalStatusArray",
                             self._on_nav_status)
+
+    def set_stream_active(self, key: str, on: bool) -> None:
+        """Subscribe to (on) or drop (off) an on-demand stream: "image" or "cloud"."""
+        if self._streams_on.get(key) == on:
+            return
+        self._streams_on[key] = on
+        if self._ros and self.is_connected():
+            self._sync_streams()
+
+    def _sync_streams(self) -> None:
+        if not self.profile or not self._ros:
+            return
+        t, lim = self.profile.topics, self.profile.limits
+        streams = {
+            "image": (t.camera_image, "sensor_msgs/msg/CompressedImage",
+                      lambda m: (self._mark("image"), self._on_image(m)), lim.image_throttle_ms),
+            "cloud": (t.camera_cloud, "sensor_msgs/msg/PointCloud2",
+                      lambda m: (self._mark("cloud"), self._post("cloud_received", m, coalesce=True)),
+                      lim.cloud_throttle_ms),
+        }
+        for key, (name, msg_type, cb, throttle) in streams.items():
+            if not name:
+                continue
+            if self._streams_on[key] and name not in self._subs:
+                self._subscribe(name, msg_type, cb, throttle_rate=throttle)
+            elif not self._streams_on[key] and name in self._subs:
+                try:
+                    self._subs.pop(name).unsubscribe()
+                except Exception:
+                    pass
+                self.topic_stats.pop(key, None)
 
     # action_msgs/GoalStatus codes
     _NAV_STATUS = {1: "active", 2: "active", 3: "canceling",

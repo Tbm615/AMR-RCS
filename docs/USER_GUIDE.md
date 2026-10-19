@@ -93,6 +93,23 @@ sudo apt install ros-humble-compressed-image-transport
 Then run the robot stack as usual (bringup, and Nav2 when you want to
 navigate). RCS does not start or stop ROS nodes on the robot.
 
+**Navigating where there is no saved map yet.** Run SLAM instead of AMCL and
+start Nav2 without its map server. The map then grows on the 2D Map page as
+the robot drives, and goals work right away (no initial pose needed):
+
+```bash
+ros2 launch bringup bringup.launch.py
+ros2 launch slam slamtoolbox.launch.xml
+ros2 launch nav2_bringup navigation_launch.py \
+    params_file:=$(ros2 pkg prefix navigation)/share/navigation/config/nav2_smac_mppi.yml
+ros2 run navigation cbf_safety_filter.py --ros-args \
+    --params-file $(ros2 pkg prefix navigation)/share/navigation/config/cbf_params.yaml \
+    -r cmd_vel_raw:=/cmd_vel -r cmd_vel:=/cmd_vel_safe -r scan:=/scan_filtered -r odom:=/odom
+```
+
+This is the same Nav2 and CBF chain as `robot_navigation.launch.py`, with
+slam_toolbox in place of AMCL and the map server.
+
 ---
 
 ## 3. Install the app
@@ -313,9 +330,12 @@ waypoint up to 3 times, then stops the mission and says why.
   state, and the message rate of each topic. A rate of `—` means nothing
   is arriving on that topic: check the robot side.
 - **Camera:** live image from `/camera/color/image_raw/compressed` (JPEG),
-  limited to about 10 frames/s to spare Wi-Fi.
+  limited to about 10 frames/s to spare Wi-Fi. The app only receives it
+  while the Camera page is open.
 - **3D View:** the camera point cloud (`/camera/depth/points`, about 2
-  frames/s, at most 60 000 points) and the robot as a box. Drag to orbit,
+  frames/s, at most 60 000 points) and the robot as a box. The cloud is
+  about 1 MB per frame, so the app only receives it while the 3D View page is
+  open; on the other pages it does not use the Wi-Fi at all. Drag to orbit,
   wheel to zoom. Needs OpenGL; on PCs without it the page shows a notice.
 - **Logs:** messages from `/rosout`. Choose a minimum level, toggle
   auto-scroll, or **Clear**.
@@ -389,6 +409,18 @@ rcs --host 192.168.10.10:9090 --autoconnect
 - Start Nav2 on the robot, then set the initial pose. Nav2 only finishes
   starting once AMCL has a pose.
 
+**The robot reaches the goal but faces the wrong way**
+- In Nav2's planner settings (`nav2_smac_mppi.yml`, `GridBased`),
+  `use_final_approach_orientation` must be `false`. With `true` the planner
+  replaces the heading you clicked with the direction it arrives from. This
+  workspace ships with `false`.
+
+**Goal stays on "navigating" near the goal, robot shuffles or spins**
+- Nav2 cannot close the last few centimetres to the side. The
+  workspace uses `xy_goal_tolerance: 0.15` and starts turning to the goal
+  heading 0.35 m before the goal (`GoalAngleCritic.threshold_to_consider`),
+  which avoids it. Cancel the goal and send it again if it happens.
+
 **Robot does not move with Teleop**
 - The driver must listen on `/cmd_vel_safe` (this is the bringup default).
   If bringup was started with `cmd_vel_topic:=/cmd_vel`, change **cmd_vel**
@@ -396,6 +428,8 @@ rcs --host 192.168.10.10:9090 --autoconnect
 - Check the E-STOP is released (status bar).
 
 **Camera page stays black**
+- The camera is only received while the Camera page is open: give it a
+  second after opening the page.
 - Install `ros-humble-compressed-image-transport` on the robot and check
   that `/camera/color/image_raw/compressed` exists.
 

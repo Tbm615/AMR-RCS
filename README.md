@@ -28,7 +28,8 @@ WebSocket.
 - **Missions:** ordered waypoints (checkpoints) with tolerance and dwell,
   loop routes, play / pause / stop; automatic retry when Nav2 drops or
   aborts a goal.
-- **Camera** (compressed JPEG), **3D view** (point cloud), **Status**
+- **Camera** (compressed JPEG) and **3D view** (point cloud), received only
+  while their page is open to save Wi-Fi, **Status**
   (speeds, per-topic rates) and **Logs** (`/rosout`).
 
 Screenshots (taken from the app driving real Nav2 on a simulated robot) are in
@@ -52,6 +53,11 @@ python -m rcs
 | `tests/test_e2e.py` | nothing (built-in mock rosbridge) | the app connects, subscribes, streams teleop, publishes goals |
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
 | `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
+
+v0.2.2 was also tested on the real robot over Wi-Fi: live map from
+slam_toolbox, costmaps, camera, point cloud, goals with heading, cancel,
+E-STOP while driving (stopped in 0.55 s), a looping two-waypoint mission
+(4 legs) and teleop.
 
 All tests run headless with `QT_QPA_PLATFORM=offscreen`. With the sim running,
 `tests/screenshot_live.py` regenerates the screenshots in `docs/screenshots/`.

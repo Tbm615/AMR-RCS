@@ -64,19 +64,29 @@ def main() -> int:
     w.profiles.save()
 
     results = {"ticks": 0, "goal_sent": False, "cmdvel_sent": False, "done": False}
+    cam_topic = prof.topics.camera_image
+    cam_subs = {}
+
+    def cam_subscribed():
+        return bool(mock_rosbridge.HUB.subs_by_topic.get(cam_topic))
 
     def after_connect():
         # we're connected (or trying); send a teleop command, then a goal
         w.ros.publish_cmd_vel(0.2, 0.1)
         results["cmdvel_sent"] = True
+        cam_subs["idle"] = cam_subscribed()
+        w.btns["cam"].click()      # camera is subscribed only while its page is open
         QTimer.singleShot(500, send_goal)
 
     def send_goal():
         w.ros.send_nav_goal(1.5, 0.8, 1.57)
         results["goal_sent"] = True
+        cam_subs["open"] = cam_subscribed()
+        w.btns["status"].click()
         QTimer.singleShot(2000, finish)
 
     def finish():
+        cam_subs["closed"] = cam_subscribed()
         results["done"] = True
         w.ros.disconnect_robot()
         QTimer.singleShot(300, app.quit)
@@ -133,6 +143,9 @@ def main() -> int:
         pos = goal[-1]["msg"]["pose"]["position"]
         check("  goal x matches", abs(float(pos["x"]) - 1.5) < 0.05)
         check("  goal y matches", abs(float(pos["y"]) - 0.8) < 0.05)
+    check("camera not subscribed before its page is opened", cam_subs.get("idle") is False)
+    check("camera subscribed while its page is open", cam_subs.get("open") is True)
+    check("camera unsubscribed after leaving its page", cam_subs.get("closed") is False)
     check("map subscribed", "/map" in subs or stats.get("map") is not None)
     check("scan rate > 0", (stats.get("scan") and stats["scan"].hz > 1.0) if stats.get("scan") else False)
     check("odom rate > 0", (stats.get("odom") and stats["odom"].hz > 1.0) if stats.get("odom") else False)

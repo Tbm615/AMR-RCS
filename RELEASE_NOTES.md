@@ -8,6 +8,15 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### Changes in v0.2.2: tested on the real robot
+
+- The camera image and the point cloud are only received while their page is open. The depth cloud is about 1 MB per frame, and over Wi-Fi it slowed everything else down.
+- Odometry is received at 20 Hz instead of 100 Hz, which is plenty for display and costs less Wi-Fi.
+- The Camera page shows its frame rate.
+- Robot side (this workspace's `nav2_smac_mppi.yml`, not part of the app):
+  - Goals now end with the heading you click. `use_final_approach_orientation` was `true`, so Nav2 ignored the heading.
+  - The goal tolerance is now 0.15 m, and the robot starts turning to the goal heading 0.35 m before the goal (was 0.5 m), so it no longer gets stuck a few centimetres to the side of the goal.
+
 ### Changes in v0.2.1
 
 - The local costmap was drawn in the wrong place. Nav2 keeps it in the `odom` frame, and it is now placed on the map through TF.
@@ -31,4 +40,10 @@ The robot must run `rosbridge_server` on port 9090. Setup and everything else ar
 
 - On real Windows and Linux machines (GitHub Actions), the built app connects, subscribes to every topic, and stays silent while idle.
 - On a PC running this workspace's Nav2 launch on `map23_04` with a simulated base, through a real `rosbridge_server`, the app set the initial pose, sent goals from the map, canceled them, triggered E-STOP while driving, and ran a looping mission. All 28 checks passed.
-- **Not yet tested on the real robot.**
+- On the real robot over Wi-Fi (v0.2.2), with slam_toolbox, Nav2 and the CBF filter:
+  - live map and costmaps, camera and point cloud;
+  - 4 goals with a requested heading, each reached in 6–9 s;
+  - cancel;
+  - E-STOP while driving: the robot stopped in 0.55 s;
+  - a looping mission, 4 legs, each finished within 0.16 m;
+  - teleop.

@@ -171,6 +171,8 @@ class MainWindow(QMainWindow):
 
     def _show(self, key: str) -> None:
         self.stack.setCurrentWidget(self._pages[key])
+        self.ros.set_stream_active("image", key == "cam")
+        self.ros.set_stream_active("cloud", key == "3d")
 
     # ---- wire signals ----
 
@@ -192,6 +194,9 @@ class MainWindow(QMainWindow):
         self.ros.local_costmap_received.connect(self._on_local_costmap)
         self.ros.plan_received.connect(self._on_plan)
         self.ros.image_received.connect(self.p_cam.set_frame)
+        self.ros.image_received.connect(
+            lambda _: self.p_cam.set_rate(self.ros.topic_stats["image"].hz
+                                          if "image" in self.ros.topic_stats else 0.0))
         self.ros.cloud_received.connect(self.p_3d.update_pointcloud)
         self.ros.rosout_received.connect(self.p_logs.append_log)
         self.ros.tf_received.connect(self._on_tf)

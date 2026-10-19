@@ -39,8 +39,8 @@ _TOPICS = [
     ("global_costmap", "Global costmap", False),
     ("local_costmap", "Local costmap", True),
     ("plan", "Planned path  /plan", False),
-    ("image", "Camera image", True),
-    ("cloud", "Point cloud", True),
+    ("image", "Camera image (while its page is open)", True),
+    ("cloud", "Point cloud (while 3D view is open)", True),
     ("rosout", "Logs  /rosout", False),
 ]
 
