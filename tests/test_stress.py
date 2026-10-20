@@ -121,7 +121,9 @@ def main() -> int:
     w.profiles.upsert(prof)
     t0 = time.monotonic()
     w._on_connect(prof)
-    check("connect returns at once", time.monotonic() - t0 < 0.3, f"({time.monotonic() - t0:.2f} s)")
+    # first connect also starts the network loop thread (~0.4 s on CI runners);
+    # the old client blocked here for up to 10 s
+    check("connect returns at once", time.monotonic() - t0 < 1.0, f"({time.monotonic() - t0:.2f} s)")
     check("connected", wait_until(w.ros.is_connected, 10))
 
     print("\n[2D pages under load]")
