@@ -57,7 +57,7 @@ class Map2DPanel(QWidget):
         self.ck_path = QCheckBox("Planned path"); self.ck_path.setChecked(True)
         self.ck_path.toggled.connect(lambda b: self.view.path_line.setVisible(b))
         self.ck_wp = QCheckBox("Waypoints"); self.ck_wp.setChecked(True)
-        self.ck_wp.toggled.connect(lambda b: self.view.wp_scatter.setVisible(b))
+        self.ck_wp.toggled.connect(self.view.show_waypoints)
         self.ck_gc = QCheckBox("Global costmap")
         self.ck_gc.toggled.connect(self.view.show_global_costmap)
         self.ck_lc = QCheckBox("Local costmap")
@@ -73,9 +73,13 @@ class Map2DPanel(QWidget):
         root.addWidget(wrap)
 
     _HINTS = {
-        0: "Click where the robot should go, then click again in the direction it should face.",
-        1: "Each click adds a waypoint to the mission open on the Missions page.",
-        2: "Click where the robot really is, then click again in the direction it faces.",
+        0: "Press where the robot should go and drag toward the direction it should face; "
+           "release to send. (Or click, then click again in the direction.) "
+           "Right-click / Esc cancels. Right-drag pans, wheel zooms.",
+        1: "Press and drag to add a waypoint with a heading to the mission open on the "
+           "Missions page.",
+        2: "Press where the robot really is and drag toward the direction it faces; "
+           "release to set the initial pose.",
     }
 
     def _mode_changed(self, idx: int) -> None:

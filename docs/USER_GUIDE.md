@@ -19,7 +19,7 @@ through `rosbridge_server`, which runs on the robot.
 - [9. Map, localization and goals (2D Map)](#9-map-localization-and-goals-2d-map)
 - [10. Navigation page](#10-navigation-page)
 - [11. Missions, checkpoints and loop routes](#11-missions-checkpoints-and-loop-routes)
-- [12. Status, Camera, 3D View and Logs](#12-status-camera-3d-view-and-logs)
+- [12. Status, Camera, 3D Map and Logs](#12-status-camera-3d-map-and-logs)
 - [13. Several robots](#13-several-robots)
 - [14. Settings files and advanced options](#14-settings-files-and-advanced-options)
 - [15. Troubleshooting](#15-troubleshooting)
@@ -68,7 +68,8 @@ time the robot boots.
 On the robot PC, once:
 
 ```bash
-sudo apt install ros-humble-rosbridge-suite ros-humble-compressed-image-transport
+sudo apt install ros-humble-rosbridge-suite ros-humble-compressed-image-transport \
+    ros-humble-compressed-depth-image-transport
 # copy the robot/ folder of this repository next to the workspace, e.g.:
 mkdir -p ~/tbm_test/rcs_robot && cp robot/* ~/tbm_test/rcs_robot/
 chmod +x ~/tbm_test/rcs_robot/*
@@ -92,6 +93,10 @@ sudo ufw allow from 192.168.10.0/24 to any port 9090 proto tcp
 
 `ros-humble-compressed-image-transport` makes the camera publish
 `/camera/color/image_raw/compressed`, which the Camera page shows.
+`ros-humble-compressed-depth-image-transport` adds
+`/camera/depth/image_raw/compressedDepth`, which the 3D Map page uses to
+build the colored 3D map (about 1 MB/s over Wi-Fi, instead of 10 MB/s or more
+for the raw point cloud).
 
 After that, everything is done from the app: power on the robot, connect,
 and start bringup and Nav2 on the **Robot programs** page.
@@ -151,19 +156,24 @@ reconnecting every 2 seconds until you click **Disconnect**.
 ## 5. The main window
 
 - **Sidebar (left):** pages: Connection, Robot programs, Status, Teleop, 2D Map,
-  Navigation, Missions, 3D View, Camera, Logs. The red **● E-STOP** button
+  Navigation, Missions, 3D Map, Camera, Logs. The red **● E-STOP** button
   at the bottom is always visible.
 - **Status bar (bottom):** active robot and address, connection state,
   robot pose in the map (`x`, `y`, `yaw` in rad), E-STOP state.
 
 All map views share the same controls:
 
-- **Mouse wheel:** zoom. **Left-drag:** pan.
+- **Mouse wheel:** zoom. **Right-drag** (or middle-drag): pan.
+- **Left press and drag:** set a goal, the initial pose or a waypoint with a
+  heading: an arrow follows the mouse and the pose is sent when you release
+  (see [section 9](#9-map-localization-and-goals-2d-map)).
 - **Center on robot** / **Whole map** buttons (top-left of the map). A new
   map opens fitted; later map updates keep your zoom.
 - Blue rectangle and line: the robot footprint and its heading.
 - Red dots: lidar points. Green line: path planned by Nav2.
-- Orange dots: waypoints of the open mission, labeled with their order and name.
+- Green arrow: the current Nav2 goal and the heading the robot will have.
+- Orange dots and arrows: waypoints of the open mission with their heading,
+  labeled with their order and name.
 - Costmaps (when enabled): magenta = obstacle, blue haze = inflation around it.
 
 ---
@@ -261,22 +271,31 @@ know where the robot is. If the robot rectangle is not where the robot
 really is, or the Navigation page reports *no response from Nav2*:
 
 1. In **Tools**, choose **Set initial pose**.
-2. Click once on the map where the robot is.
-3. Click a second time in the direction the robot is facing.
+2. Press the left button on the map where the robot is, drag toward the
+   direction the robot is facing (a violet arrow follows the mouse), and
+   release.
 
 The lidar points should then line up with the walls on the map.
 
 **Send a goal.**
 
 1. In **Tools**, choose **Set goal** (the default).
-2. Click the destination, then click again in the direction the robot
-   should face when it arrives. A green circle marks the goal.
-3. Watch progress on the **Navigation** page.
+2. Press the left button on the destination and drag toward the direction
+   the robot should face when it arrives, like the *2D Goal Pose* tool in
+   RViz. An orange arrow follows the mouse; release to send the goal. The
+   goal then stays on the map as a green arrow until it is reached or
+   canceled.
+3. Watch progress on the **Navigation** page (you can send goals the same
+   way there).
+
+If dragging is awkward (touchpad), click once on the destination: the arrow
+then follows the mouse, and a second click sends it. Right-click or **Esc**
+cancels a goal you are still aiming.
 
 **Cancel current goal** stops the robot's navigation.
 
-**Add waypoint** mode: each click adds a waypoint to the mission currently
-open on the **Missions** page.
+**Add waypoint** mode: press and drag the same way to add a waypoint, with
+its heading, to the mission currently open on the **Missions** page.
 
 **Overlays** turn on or off the lidar points, the planned path, the
 waypoints, and the global and local costmaps (shown in red/blue over the
@@ -318,10 +337,11 @@ each in turn.
 1. Open **Missions**. Use **+** to create a mission, **Dup** to copy one,
    **Del** to delete one. Rename it in **Name**.
 2. Add waypoints:
-   - click on the map of the Missions page (or on the 2D Map page in
-     **Add waypoint** mode), or
+   - press and drag on the map of the Missions page (or on the 2D Map page
+     in **Add waypoint** mode): the press sets the position, the drag
+     direction sets the heading the robot will have there, or
    - drive the robot somewhere and click **Set here** to add its current
-     position.
+     position and heading.
 3. Edit **Name**, **x**, **y** and **yaw°** directly in the table. Reorder
    with **↑ / ↓**, delete with **Remove**.
 4. **Default per-waypoint settings** apply to waypoints you add next:
@@ -348,7 +368,7 @@ waypoint up to 3 times, then stops the mission and says why.
 
 ---
 
-## 12. Status, Camera, 3D View and Logs
+## 12. Status, Camera, 3D Map and Logs
 
 ![Status page](screenshots/status.png)
 
@@ -360,13 +380,46 @@ waypoint up to 3 times, then stops the mission and says why.
 - **Camera:** live image from `/camera/color/image_raw/compressed` (JPEG),
   limited to about 10 frames/s to spare Wi-Fi. The app only receives it
   while the Camera page is open.
-- **3D View:** the camera point cloud (`/camera/depth/points`, about 2
-  frames/s, at most 60 000 points) and the robot as a box. The cloud is
-  about 1 MB per frame, so the app only receives it while the 3D View page is
-  open; on the other pages it does not use the Wi-Fi at all. Drag to orbit,
-  wheel to zoom. Needs OpenGL; on PCs without it the page shows a notice.
 - **Logs:** messages from `/rosout`. Choose a minimum level, toggle
-  auto-scroll, or **Clear**.
+  auto-scroll, or **Clear**. The page keeps the newest 3000 lines.
+
+### 3D Map
+
+![3D Map page](screenshots/map3d.png)
+
+A colored 3D map of what the camera has seen, in the map frame, like the 3D
+view of the `report.html` that `save_run` writes after an RTAB-Map run. It
+is built in the app while you drive (Teleop or goals):
+
+- Each camera frame (depth + color, about 2 per second) is placed on the map
+  with the robot's position **at the moment the frame was taken**, so the
+  map stays straight while the robot turns. Everything is merged into a grid
+  of small cubes (the **Voxel** size, 3 cm by default): one colored point per
+  cube.
+- **● Record 3D map** adds to the map while this page is open. Tick **Keep
+  recording on other pages** to keep building it while you use the other
+  pages (it then uses about 1 MB/s of Wi-Fi all the time). The map is kept
+  when you leave the page, until you click **Clear** or close the app.
+- **Source:** *Camera depth + color* (default, light) uses
+  `/camera/depth/image_raw/compressedDepth` + the color image + the depth
+  `camera_info`. *PointCloud2 topic* uses the topic set on the Connection
+  page (default `/camera/depth_registered/points`, much heavier). A
+  PointCloud2 that is already in the `map` frame (e.g. an RTAB-Map cloud
+  map) replaces the whole map instead of adding to it.
+- **Max range:** depth farther than this (4 m by default) is too noisy to
+  keep.
+- **Save PLY… / Open PLY…:** save the map as a `.ply` file (opens in
+  CloudCompare / MeshLab), or open one. Opening also works with the
+  `map/cloud3d.ply` of a `save_run` result folder, to look at an RTAB-Map run
+  in the app. Opening a file pauses recording so the live camera does not
+  add to it; click **Record** to continue.
+- View: **left-drag** orbits, **right-drag** (or Shift+left-drag) pans,
+  **wheel** zooms. **Top view**, **Perspective** and **Whole map** set the
+  camera; **Follow robot** keeps the robot in the middle (panning turns it
+  off). Layers: 3D map, robot, trajectory (orange), the 2D map on the floor,
+  grid. **Point size** changes the dot size.
+
+The page needs OpenGL; on PCs without it the page shows a notice.
 
 ---
 
@@ -399,7 +452,7 @@ closed):
 | `limits.footprint_half_length` / `_half_width` | 0.45 / 0.30 m | robot rectangle on the maps |
 | `limits.laser_offset_x` | 0.40 m | lidar position, used only if `/tf_static` has no `laser_frame` |
 | `limits.image_throttle_ms` | 100 | minimum time between camera frames |
-| `limits.cloud_throttle_ms` | 500 | minimum time between point clouds |
+| `limits.cloud_throttle_ms` | 500 | minimum time between depth frames / point clouds for the 3D map |
 | `topics.*` | see section 1 | every topic and frame name |
 
 **Command-line options**
@@ -471,6 +524,28 @@ rcs --host 192.168.10.10:9090 --autoconnect
 - Install `ros-humble-compressed-image-transport` on the robot and check
   that `/camera/color/image_raw/compressed` exists.
 
+**The app shows "Not Responding" or stops updating**
+- Fixed in v0.4.0: older versions froze the window for 10 s every time they
+  tried to (re)connect to a robot that did not answer, e.g. after a Wi-Fi
+  drop. Update the app.
+- After a Wi-Fi drop the app reconnects by itself within a few seconds; the
+  status bar shows *offline* meanwhile. Commands are not queued while
+  offline: nothing old is sent to the robot when the link comes back.
+
+**3D Map stays empty ("no camera frames")**
+- Bringup must be running (the camera is part of it).
+- With the default source, the robot needs
+  `ros-humble-compressed-depth-image-transport` (section 2). Check
+  `ros2 topic list | grep compressedDepth` on the robot. Or switch **Source**
+  to *PointCloud2 topic*.
+- "no TF from map to …": navigation (SLAM or AMCL) is not running, so there
+  is no `map` frame yet.
+
+**The 3D map is smeared or doubled**
+- The robot was not localized while recording (AMCL jumped). **Clear** the
+  map, set the initial pose, and record again.
+
 **The app closes unexpectedly**
-- Look at the app log (section 14). The console build on Windows shows the
-  same output live.
+- Look at the app log (section 14): crashes, including hard ones inside
+  Qt or OpenGL, leave a stack trace there. The console build on Windows
+  shows the same output live.

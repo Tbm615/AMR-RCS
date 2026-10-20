@@ -46,6 +46,16 @@ try:
         traceback.print_exception(exctype, value, tb, file=_logf)
         _logf.flush()
     sys.excepthook = _excepthook
+
+    def _thread_excepthook(args):
+        _logf.write(f"UNCAUGHT EXCEPTION in thread {args.thread.name if args.thread else '?'}:\n")
+        traceback.print_exception(args.exc_type, args.exc_value, args.exc_traceback, file=_logf)
+        _logf.flush()
+    import threading
+    threading.excepthook = _thread_excepthook
+    # hard crashes (segfaults in Qt/OpenGL) leave a Python stack in the log
+    import faulthandler
+    faulthandler.enable(_logf)
 except Exception:
     pass
 

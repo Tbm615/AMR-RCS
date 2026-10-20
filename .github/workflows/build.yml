@@ -52,6 +52,12 @@ jobs:
       - name: Robot programs page against mock launcher
         run: python tests/test_robot_page.py
 
+      - name: Responsiveness, reconnect and 3D map under robot-sized traffic
+        # shared CI runners are slower than an operator PC: allow longer stalls
+        env:
+          RCS_MAX_STALL_S: "2.0"
+        run: python tests/test_stress.py
+
       - name: Build (console)
         run: python build.py
 

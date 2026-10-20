@@ -1,6 +1,12 @@
-"""2D map view: OccupancyGrid + scan overlay + robot pose + click emits map coords.
+"""2D map view: OccupancyGrid + scan overlay + robot pose + goal arrows.
 
 Pyqtgraph-based so pan/zoom are built in. Overlays can be toggled.
+
+Goals, initial poses and waypoints are set like in RViz: press where the
+robot should be and drag toward the heading; an arrow follows the mouse and
+the pose is sent on release. A plain click (no drag) pins the position and
+the arrow then follows the mouse until a second click. Right-click or Esc
+cancels. Right- or middle-drag pans, the wheel zooms.
 """
 from __future__ import annotations
 
@@ -8,10 +14,13 @@ import math
 from typing import Optional
 
 import numpy as np
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QTransform
+from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QPen, QPolygonF, QTransform
+from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsPolygonItem
 
 import pyqtgraph as pg
+
+from ...core.ros_client import cost_rgba, grid_from_msg, scan_points
 
 
 # occupancy -> rgba. Build once for the whole module.
@@ -28,10 +37,81 @@ def _build_lut() -> np.ndarray:
 _LUT = _build_lut()
 
 
+def _arrow_polygon(x: float, y: float, yaw: float, length: float) -> QPolygonF:
+    """Filled arrow from (x, y) pointing along yaw, `length` long (map units)."""
+    shaft_w = length * 0.11
+    head_l, head_w = length * 0.38, length * 0.30
+    body = length - head_l
+    pts = [(0.0, shaft_w / 2), (body, shaft_w / 2), (body, head_w / 2), (length, 0.0),
+           (body, -head_w / 2), (body, -shaft_w / 2), (0.0, -shaft_w / 2)]
+    c, s = math.cos(yaw), math.sin(yaw)
+    return QPolygonF([QPointF(x + px * c - py * s, y + px * s + py * c) for px, py in pts])
+
+
+class _Arrow(QGraphicsPolygonItem):
+    """Arrow drawn in map coordinates; its size follows the zoom so it stays
+    readable (about `px` screen pixels long)."""
+
+    def __init__(self, color: str, z: float, px: float = 64.0):
+        super().__init__()
+        col = QColor(color)
+        self.setPen(QPen(col.darker(160), 0))
+        fill = QColor(col)
+        fill.setAlpha(225)
+        self.setBrush(QBrush(fill))
+        self.setZValue(z)
+        self.px = px
+        self.pose: Optional[tuple] = None
+        self.setVisible(False)
+
+    def set_pose(self, pose: Optional[tuple], units_per_px: float) -> None:
+        self.pose = pose
+        if pose is None:
+            self.setVisible(False)
+            return
+        self.setPolygon(_arrow_polygon(pose[0], pose[1], pose[2], self.px * units_per_px))
+        self.setVisible(True)
+
+    def rescale(self, units_per_px: float) -> None:
+        if self.pose is not None:
+            self.set_pose(self.pose, units_per_px)
+
+
+class _Dots(QGraphicsPathItem):
+    """Many same-size dots as one path of zero-length round-capped segments.
+    ScatterPlotItem keeps per-point Python objects and took ~45 ms per
+    5000-point scan on the GUI thread; this builds the path vectorised."""
+
+    def __init__(self, color: str, size: float, z: float):
+        super().__init__()
+        pen = QPen(QColor(color), size)
+        pen.setCosmetic(True)
+        pen.setCapStyle(Qt.RoundCap)
+        self.setPen(pen)
+        self.setZValue(z)
+        self._xy = (np.empty(0, np.float32), np.empty(0, np.float32))
+
+    def setData(self, xs, ys) -> None:
+        xs = np.asarray(xs, np.float64)
+        ys = np.asarray(ys, np.float64)
+        self._xy = (xs, ys)
+        if xs.size == 0:
+            self.setPath(pg.QtGui.QPainterPath())
+            return
+        self.setPath(pg.arrayToQPath(np.repeat(xs, 2), np.repeat(ys, 2), connect="pairs"))
+
+    def getData(self):
+        return self._xy
+
+    def boundingRect(self):
+        # include the pen so dots on the edge are not clipped
+        return super().boundingRect().adjusted(-1, -1, 1, 1)
+
+
 class MapView(pg.PlotWidget):
     goal_requested = Signal(float, float, float)   # x, y, yaw (map frame)
     pose_requested = Signal(float, float, float)   # x, y, yaw — set initial pose
-    pose_clicked = Signal(float, float)             # x, y — for mission waypoints
+    waypoint_requested = Signal(float, float, float)   # x, y, yaw — waypoint with heading
 
     def __init__(self, parent=None):
         super().__init__(parent, background="#0f1115")
@@ -60,9 +140,7 @@ class MapView(pg.PlotWidget):
         self.local_cost_img.setVisible(False)
         self.addItem(self.local_cost_img)
 
-        self.scan_scatter = pg.ScatterPlotItem(
-            size=3, pen=pg.mkPen(None), brush=pg.mkBrush("#ff6a6a"))
-        self.scan_scatter.setZValue(10)
+        self.scan_scatter = _Dots("#ff6a6a", 3, 10)
         self.addItem(self.scan_scatter)
 
         self.path_line = pg.PlotDataItem(pen=pg.mkPen("#39d98a", width=2))
@@ -82,19 +160,26 @@ class MapView(pg.PlotWidget):
         self.robot_arrow.setZValue(21)
         self.addItem(self.robot_arrow)
 
-        self.goal_marker = pg.ScatterPlotItem(
-            size=18, pen=pg.mkPen("#39d98a", width=2), brush=pg.mkBrush(0, 0, 0, 0))
-        self.goal_marker.setZValue(15)
-        self.addItem(self.goal_marker)
+        # current Nav2 goal (green) and the arrow being dragged (amber / violet)
+        self.goal_arrow = _Arrow("#39d98a", 15)
+        self.addItem(self.goal_arrow)
+        self.aim_arrow = _Arrow("#ffb547", 30)
+        self.addItem(self.aim_arrow)
+        self.wp_arrows: list = []
+        self.getPlotItem().vb.sigRangeChanged.connect(self._rescale_arrows)
 
         self._map_origin = (0.0, 0.0)
         self._map_res = 0.05
         self._robot_half_l = 0.45
         self._robot_half_w = 0.30
         self._click_mode = "goal"   # 'goal' | 'waypoint' | 'pose'
-        self._pending: Optional[tuple] = None   # for drag-to-set-yaw
-
-        self.scene().sigMouseClicked.connect(self._on_click)
+        self._anchor: Optional[tuple] = None    # (x, y) pinned position while aiming
+        self._press_px: Optional[QPointF] = None
+        self._aiming = False                    # click-then-click: arrow follows the mouse
+        self._pan_last = None                   # right/middle-drag pan in progress
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)
 
         self._robot_xy = None
         self._fitted = False
@@ -121,6 +206,7 @@ class MapView(pg.PlotWidget):
 
     def set_click_mode(self, mode: str) -> None:
         self._click_mode = mode
+        self.cancel_aim()
 
     def show_global_costmap(self, on: bool) -> None:
         self.cost_img.setVisible(on)
@@ -145,22 +231,12 @@ class MapView(pg.PlotWidget):
         """(map_tx, map_ty, map_yaw) is the pose of the LASER frame in the map frame.
         The main window composes map→base_link ∘ base_link→laser so we only do a
         rigid 2D transform of the beams here."""
-        ranges = msg.get("ranges", [])
-        if not ranges:
+        lx, ly = msg["_xy"] if "_xy" in msg else scan_points(msg)   # laser frame
+        if not len(lx):
             self.scan_scatter.setData([], [])
             return
-        a0 = float(msg.get("angle_min", 0.0))
-        da = float(msg.get("angle_increment", 0.0))
-        rmin = float(msg.get("range_min", 0.0))
-        rmax = float(msg.get("range_max", 100.0))
-        # rosbridge encodes inf/NaN (no return) as JSON null -> None
-        arr = np.array([np.inf if r is None else r for r in ranges], dtype=np.float32)
-        angles = a0 + np.arange(arr.size, dtype=np.float32) * da
-        mask = np.isfinite(arr) & (arr >= rmin) & (arr <= rmax)
-        arr = arr[mask]; angles = angles[mask]
-        xs = arr * np.cos(angles + map_yaw) + map_tx
-        ys = arr * np.sin(angles + map_yaw) + map_ty
-        self.scan_scatter.setData(xs, ys)
+        c, s = math.cos(map_yaw), math.sin(map_yaw)
+        self.scan_scatter.setData(lx * c - ly * s + map_tx, lx * s + ly * c + map_ty)
 
     def resizeEvent(self, ev) -> None:
         super().resizeEvent(ev)
@@ -211,17 +287,28 @@ class MapView(pg.PlotWidget):
         self.path_line.setData(xs, ys)
 
     def set_waypoints(self, pts: list) -> None:
-        """pts: (x, y) or (x, y, label) tuples, drawn in order with labels."""
+        """pts: (x, y), (x, y, label) or (x, y, label, yaw) tuples, drawn in
+        order with labels and, when yaw is given, a heading arrow."""
         for t in getattr(self, "_wp_labels", []):
             self.removeItem(t)
         self._wp_labels = []
+        for a in self.wp_arrows:
+            self.removeItem(a)
+        self.wp_arrows = []
         if not pts:
             self.wp_scatter.setData([], [])
             return
         xs = [float(p[0]) for p in pts]
         ys = [float(p[1]) for p in pts]
         self.wp_scatter.setData(xs, ys)
+        upp = self._units_per_px()
         for p in pts:
+            if len(p) >= 4 and p[3] is not None:
+                a = _Arrow("#ffb547", 11, px=34)
+                a.setVisible(self.wp_scatter.isVisible())
+                self.addItem(a)
+                a.set_pose((float(p[0]), float(p[1]), float(p[3])), upp)
+                self.wp_arrows.append(a)
             if len(p) < 3 or not p[2]:
                 continue
             t = pg.TextItem(str(p[2]), color="#ffb547", anchor=(-0.15, 0.5),
@@ -231,11 +318,134 @@ class MapView(pg.PlotWidget):
             self.addItem(t)
             self._wp_labels.append(t)
 
-    def set_goal(self, x: float | None, y: float | None) -> None:
+    def show_waypoints(self, on: bool) -> None:
+        self.wp_scatter.setVisible(on)
+        for a in self.wp_arrows:
+            a.setVisible(on)
+        for t in getattr(self, "_wp_labels", []):
+            t.setVisible(on)
+
+    def set_goal(self, x: float | None, y: float | None, yaw: float | None = 0.0) -> None:
+        """Show the current goal as an arrow (None clears it)."""
         if x is None:
-            self.goal_marker.setData([], [])
+            self.goal_arrow.set_pose(None, 0)
         else:
-            self.goal_marker.setData([x], [y])
+            self.goal_arrow.set_pose((float(x), float(y), float(yaw or 0.0)), self._units_per_px())
+
+    # ---- arrows / aiming ----
+
+    def _units_per_px(self) -> float:
+        try:
+            pw, ph = self.getPlotItem().vb.viewPixelSize()
+            return float(max(pw, ph)) or 0.02
+        except Exception:  # noqa: BLE001  (view not laid out yet)
+            return 0.02
+
+    def _rescale_arrows(self, *_) -> None:
+        upp = self._units_per_px()
+        for a in [self.goal_arrow, self.aim_arrow] + self.wp_arrows:
+            a.rescale(upp)
+
+    _AIM_COLORS = {"goal": "#ffb547", "pose": "#b18cff", "waypoint": "#ffd27a"}
+
+    def _view_xy(self, ev) -> tuple:
+        pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+        mp = self.getPlotItem().vb.mapSceneToView(self.mapToScene(pos.toPoint()))
+        return float(mp.x()), float(mp.y())
+
+    def _in_plot(self, ev) -> bool:
+        pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+        vb = self.getPlotItem().vb
+        return vb.sceneBoundingRect().contains(self.mapToScene(pos.toPoint()))
+
+    def _update_aim(self, x: float, y: float) -> None:
+        ax, ay = self._anchor
+        yaw = math.atan2(y - ay, x - ax) if math.hypot(x - ax, y - ay) > 1e-6 else (
+            self.aim_arrow.pose[2] if self.aim_arrow.pose else 0.0)
+        self.aim_arrow.set_pose((ax, ay, yaw), self._units_per_px())
+
+    def cancel_aim(self) -> None:
+        self._anchor = None
+        self._press_px = None
+        self._aiming = False
+        self.aim_arrow.set_pose(None, 0)
+
+    def _finish_aim(self) -> None:
+        x, y, yaw = self.aim_arrow.pose
+        mode = self._click_mode
+        self.cancel_aim()
+        if mode == "goal":
+            self.set_goal(x, y, yaw)
+            self.goal_requested.emit(x, y, yaw)
+        elif mode == "pose":
+            self.pose_requested.emit(x, y, yaw)
+        elif mode == "waypoint":
+            self.waypoint_requested.emit(x, y, yaw)
+
+    def mousePressEvent(self, ev) -> None:
+        if ev.button() == Qt.RightButton and self._anchor is not None:
+            self.cancel_aim()
+            ev.accept()
+            return
+        if ev.button() in (Qt.RightButton, Qt.MiddleButton) and self._in_plot(ev):
+            self._pan_last = self._view_xy(ev)
+            ev.accept()
+            return
+        if ev.button() != Qt.LeftButton or not self._in_plot(ev):
+            super().mousePressEvent(ev)
+            return
+        x, y = self._view_xy(ev)
+        if self._aiming:                      # second click of click-then-click
+            self._update_aim(x, y)
+            self._finish_aim()
+            ev.accept()
+            return
+        self._anchor = (x, y)
+        self._press_px = ev.position() if hasattr(ev, "position") else ev.localPos()
+        self.aim_arrow.setBrush(QBrush(QColor(self._AIM_COLORS.get(self._click_mode, "#ffb547"))))
+        self.aim_arrow.set_pose((x, y, 0.0), self._units_per_px())
+        self.aim_arrow.setVisible(False)      # shown once the drag has a direction
+        ev.accept()
+
+    def mouseMoveEvent(self, ev) -> None:
+        if self._pan_last is not None:
+            x, y = self._view_xy(ev)
+            self.getPlotItem().vb.translateBy(x=self._pan_last[0] - x, y=self._pan_last[1] - y)
+            self._pan_last = self._view_xy(ev)     # same screen point, panned view
+            ev.accept()
+            return
+        if self._anchor is None:
+            super().mouseMoveEvent(ev)
+            return
+        x, y = self._view_xy(ev)
+        self._update_aim(x, y)
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev) -> None:
+        if self._pan_last is not None and ev.button() in (Qt.RightButton, Qt.MiddleButton):
+            self._pan_last = None
+            ev.accept()
+            return
+        if self._anchor is None or self._aiming or ev.button() != Qt.LeftButton:
+            super().mouseReleaseEvent(ev)
+            return
+        pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+        moved = (pos - self._press_px).manhattanLength() if self._press_px is not None else 0
+        if moved >= 8:                        # press-drag-release: done
+            x, y = self._view_xy(ev)
+            self._update_aim(x, y)
+            self._finish_aim()
+        else:                                 # plain click: aim with the mouse, click again
+            self._aiming = True
+            self.aim_arrow.setVisible(True)
+        ev.accept()
+
+    def keyPressEvent(self, ev) -> None:
+        if ev.key() == Qt.Key_Escape and self._anchor is not None:
+            self.cancel_aim()
+            ev.accept()
+            return
+        super().keyPressEvent(ev)
 
     # ---- internals ----
 
@@ -249,10 +459,10 @@ class MapView(pg.PlotWidget):
         origin = info.get("origin", {}).get("position", {})
         ox = float(origin.get("x", 0.0))
         oy = float(origin.get("y", 0.0))
-        data = np.asarray(msg.get("data", []), dtype=np.int8)
-        if data.size != w * h:
+        g = msg["_grid"] if "_grid" in msg else grid_from_msg(msg)
+        if g is None or g.shape != (h, w):
             return
-        grid = data.reshape((h, w)).astype(np.uint8)   # -1 wraps to 255 (unknown)
+        grid = g.astype(np.uint8)   # -1 wraps to 255 (unknown)
         item.setImage(grid.T, autoLevels=False, levels=[0, 255])
         item.setRect(ox, oy, w * res, h * res)
         if update_origin:
@@ -275,19 +485,14 @@ class MapView(pg.PlotWidget):
         opos = origin.get("position", {})
         oq = origin.get("orientation", {})
         oyaw = math.atan2(2 * (oq.get("w", 1.0) * oq.get("z", 0.0)), 1 - 2 * oq.get("z", 0.0) ** 2)
-        data = np.asarray(msg.get("data", []), dtype=np.int8)
-        if data.size != w * h:
+        rgba = msg.get("_rgba")
+        if rgba is None:
+            g = grid_from_msg(msg)
+            if g is None:
+                return
+            rgba = cost_rgba(g)
+        if rgba.shape[:2] != (h, w):
             return
-        c = data.reshape((h, w)).astype(np.int16)
-        # Nav2 costs: 100 lethal, 99 inscribed, 1..98 inflation, 0 free, -1 unknown.
-        # Inflation fades in with cost so low-cost space stays readable;
-        # obstacles (inscribed/lethal) are solid magenta.
-        rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        infl = (c > 0) & (c < 99)
-        rgba[infl, 0], rgba[infl, 1], rgba[infl, 2] = 70, 130, 255
-        rgba[infl, 3] = np.clip(c[infl] * 1.6, 0, 150).astype(np.uint8)
-        leth = c >= 99
-        rgba[leth] = (230, 40, 140, 210)
         item.setImage(rgba.transpose(1, 0, 2), autoLevels=False)
         # pixel -> costmap frame (origin, resolution) -> map frame (frame_pose)
         fx, fy, fyaw = frame_pose
@@ -298,26 +503,3 @@ class MapView(pg.PlotWidget):
         tr.rotate(math.degrees(oyaw))
         tr.scale(res, res)
         item.setTransform(tr)
-
-    def _on_click(self, ev) -> None:
-        if ev.button() != Qt.LeftButton:
-            return
-        pos = ev.scenePos()
-        mp = self.getPlotItem().vb.mapSceneToView(pos)
-        x, y = float(mp.x()), float(mp.y())
-        if self._click_mode in ("goal", "pose"):
-            if self._pending is None:
-                self._pending = (x, y)
-                self.set_goal(x, y)
-            else:
-                x0, y0 = self._pending
-                yaw = math.atan2(y - y0, x - x0)
-                self._pending = None
-                self.set_goal(x0, y0)
-                if self._click_mode == "goal":
-                    self.goal_requested.emit(x0, y0, yaw)
-                else:
-                    self.pose_requested.emit(x0, y0, yaw)
-                    self.set_goal(None, None)
-        elif self._click_mode == "waypoint":
-            self.pose_clicked.emit(x, y)

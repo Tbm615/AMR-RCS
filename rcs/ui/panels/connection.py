@@ -70,6 +70,7 @@ class ConnectionPanel(QWidget):
         self.t_scan = QLineEdit()
         self.t_map = QLineEdit()
         self.t_img = QLineEdit()
+        self.t_depth = QLineEdit()
         self.t_cloud = QLineEdit()
         self.f_base = QLineEdit()
         self.f_map = QLineEdit()
@@ -78,7 +79,8 @@ class ConnectionPanel(QWidget):
         tf.addRow("scan", self.t_scan)
         tf.addRow("map", self.t_map)
         tf.addRow("camera image", self.t_img)
-        tf.addRow("camera cloud", self.t_cloud)
+        tf.addRow("camera depth", self.t_depth)
+        tf.addRow("point cloud", self.t_cloud)
         tf.addRow("base frame", self.f_base)
         tf.addRow("map frame", self.f_map)
         right.addWidget(topics_box)
@@ -150,6 +152,7 @@ class ConnectionPanel(QWidget):
         self.t_scan.setText(p.topics.scan)
         self.t_map.setText(p.topics.map)
         self.t_img.setText(p.topics.camera_image)
+        self.t_depth.setText(p.topics.camera_depth)
         self.t_cloud.setText(p.topics.camera_cloud)
         self.f_base.setText(p.topics.base_frame)
         self.f_map.setText(p.topics.map_frame)
@@ -171,6 +174,7 @@ class ConnectionPanel(QWidget):
         p.topics.scan = self.t_scan.text().strip()
         p.topics.map = self.t_map.text().strip()
         p.topics.camera_image = self.t_img.text().strip()
+        p.topics.camera_depth = self.t_depth.text().strip()
         p.topics.camera_cloud = self.t_cloud.text().strip()
         p.topics.base_frame = self.f_base.text().strip() or "base_link"
         p.topics.map_frame = self.f_map.text().strip() or "map"

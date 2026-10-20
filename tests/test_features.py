@@ -27,6 +27,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 _app = QApplication.instance() or QApplication(sys.argv)
 
@@ -121,6 +122,89 @@ def test_map_view() -> None:
     check("waypoints have 3 points", len(wx) == 3)
 
 
+# ---- 1b. goal arrow: press-drag-release like RViz ----
+
+def test_goal_arrow() -> None:
+    print("\n[Goal arrow]")
+    from PySide6.QtCore import QPointF
+    from PySide6.QtTest import QTest
+    v = MapView()
+    v.resize(600, 600)
+    v.show()
+    v.getPlotItem().vb.setRange(xRange=(-5, 5), yRange=(-5, 5), padding=0)
+    for _ in range(3):
+        QApplication.processEvents()
+    vb = v.getPlotItem().vb
+
+    def px(x, y):
+        sp = vb.mapViewToScene(QPointF(x, y))
+        return v.mapFromScene(sp)
+
+    got = []
+    v.goal_requested.connect(lambda x, y, yaw: got.append((x, y, yaw)))
+    a, b = px(1.0, 1.0), px(1.0, 3.0)            # drag straight "up" (+y)
+    QTest.mousePress(v.viewport(), Qt.LeftButton, Qt.NoModifier, a)
+    for k in range(1, 6):
+        QTest.mouseMove(v.viewport(), a + (b - a) * (k / 5))
+    check("arrow shown while dragging", v.aim_arrow.isVisible())
+    QTest.mouseRelease(v.viewport(), Qt.LeftButton, Qt.NoModifier, b)
+    check("drag sends one goal", len(got) == 1, f"{got}")
+    if got:
+        x, y, yaw = got[0]
+        check("goal at the press point", abs(x - 1.0) < 0.1 and abs(y - 1.0) < 0.1, f"{got[0]}")
+        check("goal heading = drag direction (+90°)", abs(yaw - math.pi / 2) < 0.05, f"{yaw:.3f}")
+    check("goal drawn as an arrow", v.goal_arrow.isVisible() and v.goal_arrow.pose is not None)
+    check("aim arrow hidden after release", not v.aim_arrow.isVisible())
+
+    # click, then click again in the direction (-x)
+    got.clear()
+    c, d = px(-1.0, 0.0), px(-3.0, 0.0)
+    QTest.mouseClick(v.viewport(), Qt.LeftButton, Qt.NoModifier, c)
+    check("plain click does not send yet", not got)
+    QTest.mouseMove(v.viewport(), d)
+    QTest.mouseClick(v.viewport(), Qt.LeftButton, Qt.NoModifier, d)
+    check("second click sends", len(got) == 1, f"{got}")
+    if got:
+        check("click-click heading (180°)", abs(abs(got[0][2]) - math.pi) < 0.05, f"{got[0][2]:.3f}")
+
+    # right-click cancels
+    got.clear()
+    QTest.mouseClick(v.viewport(), Qt.LeftButton, Qt.NoModifier, c)
+    QTest.mouseClick(v.viewport(), Qt.RightButton, Qt.NoModifier, d)
+    QTest.mouseClick(v.viewport(), Qt.LeftButton, Qt.NoModifier, d)   # starts a new aim, no goal
+    check("right-click cancels", not got)
+    v.cancel_aim()
+
+    # initial pose and waypoint modes use the same arrow
+    poses, wps = [], []
+    v.pose_requested.connect(lambda *a: poses.append(a))
+    v.waypoint_requested.connect(lambda *a: wps.append(a))
+    v.set_click_mode("pose")
+    QTest.mousePress(v.viewport(), Qt.LeftButton, Qt.NoModifier, a)
+    QTest.mouseMove(v.viewport(), px(3.0, 1.0))
+    QTest.mouseRelease(v.viewport(), Qt.LeftButton, Qt.NoModifier, px(3.0, 1.0))
+    check("initial pose with heading", len(poses) == 1 and abs(poses[0][2]) < 0.05, f"{poses}")
+    v.set_click_mode("waypoint")
+    QApplication.processEvents()
+    a = px(1.0, 1.0)                   # recompute: the aspect lock may have re-laid out the view
+    QTest.mousePress(v.viewport(), Qt.LeftButton, Qt.NoModifier, a)
+    QTest.mouseMove(v.viewport(), px(1.0, -1.0))
+    QTest.mouseRelease(v.viewport(), Qt.LeftButton, Qt.NoModifier, px(1.0, -1.0))
+    check("waypoint with heading", len(wps) == 1 and abs(wps[0][2] + math.pi / 2) < 0.05, f"{wps}")
+    (x0, x1), _ = vb.viewRange()
+    p0, p1 = px(0.0, 0.0), px(2.0, 0.0)
+    QTest.mousePress(v.viewport(), Qt.RightButton, Qt.NoModifier, p1)
+    for k in range(1, 6):
+        QTest.mouseMove(v.viewport(), p1 + (p0 - p1) * (k / 5))
+    QTest.mouseRelease(v.viewport(), Qt.RightButton, Qt.NoModifier, p0)
+    (y0, y1), _ = vb.viewRange()
+    check("right-drag pans the map (2 m to the left)", abs((y0 - x0) - 2.0) < 0.1, f"{x0:.2f} -> {y0:.2f}")
+    check("right-drag sends nothing", len(wps) == 1 and len(poses) == 1)
+    v.set_waypoints([(0, 0, "1  a", 0.0), (1, 1, "2  b", 1.57)])
+    check("waypoints drawn with heading arrows", len(v.wp_arrows) == 2)
+    v.close()
+
+
 # ---- 2. PointCloud2 decoder ----
 
 def test_pointcloud() -> None:
@@ -163,8 +247,10 @@ def test_pointcloud() -> None:
         posdata = panel.scatter.pos
         check("3D panel scatter received 3 points",
               posdata is not None and len(posdata) == 3)
+        # the 3D map stores points voxel-sorted, so compare as sets
+        srt = lambda a: a[np.lexsort(a.T[::-1])]   # noqa: E731
         check("3D scatter preserves point values",
-              posdata is not None and np.allclose(posdata, pts))
+              posdata is not None and np.allclose(srt(np.asarray(posdata)), srt(pts)))
     else:
         check("3D panel skipped (no GL)", True)
 
@@ -307,6 +393,7 @@ def main() -> int:
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         test_map_view()
+        test_goal_arrow()
         test_pointcloud()
         test_camera()
         test_tf()

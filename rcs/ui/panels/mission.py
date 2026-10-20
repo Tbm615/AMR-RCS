@@ -26,7 +26,7 @@ class MissionPanel(QWidget):
         self.store = store
         self.view = MapView()
         self.view.set_click_mode("waypoint")
-        self.view.pose_clicked.connect(self._on_map_click)
+        self.view.waypoint_requested.connect(self._on_map_click)
         self.cur: Optional[Mission] = None
         self._exec_idx: int = -1
         self._exec_running: bool = False
@@ -78,7 +78,7 @@ class MissionPanel(QWidget):
         mv.addWidget(self.loop_ck)
         side.addWidget(mbox)
 
-        wbox = QGroupBox("Waypoints — click map in waypoint mode, or 'Set here'")
+        wbox = QGroupBox("Waypoints — drag on the map to add one with a heading, or 'Set here'")
         wv = QVBoxLayout(wbox)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["#", "Name", "x (m)", "y (m)", "yaw°"])
@@ -166,7 +166,7 @@ class MissionPanel(QWidget):
         self.table.blockSignals(False)
 
     def _emit_wps(self) -> None:
-        pts = ([(w.x, w.y, f"{i + 1}  {w.name}") for i, w in enumerate(self.cur.waypoints)]
+        pts = ([(w.x, w.y, f"{i + 1}  {w.name}", w.yaw) for i, w in enumerate(self.cur.waypoints)]
                if self.cur else [])
         self.view.set_waypoints(pts)
         self.waypoints_changed.emit(pts)
@@ -224,19 +224,21 @@ class MissionPanel(QWidget):
     def _add_here(self) -> None:
         if not self.cur:
             return
-        wp = Waypoint.new(f"wp{len(self.cur.waypoints)+1}", self._robot_x, self._robot_y)
+        wp = Waypoint.new(f"wp{len(self.cur.waypoints)+1}", self._robot_x, self._robot_y,
+                          getattr(self, "_robot_yaw", 0.0))
         wp.tolerance = self.tol_sb.value()
         wp.dwell = self.dwell_sb.value()
         self.cur.waypoints.append(wp)
         self._save(); self._refresh_table(); self._emit_wps()
 
-    def add_waypoint_at(self, x: float, y: float) -> None:
-        self._on_map_click(x, y)
+    def add_waypoint_at(self, x: float, y: float, yaw: float = 0.0) -> None:
+        self._on_map_click(x, y, yaw)
 
-    def _on_map_click(self, x: float, y: float) -> None:
+    def _on_map_click(self, x: float, y: float, yaw: float = 0.0) -> None:
         if not self.cur:
             return
         wp = Waypoint.new(f"wp{len(self.cur.waypoints)+1}", x, y)
+        wp.yaw = yaw
         wp.tolerance = self.tol_sb.value()
         wp.dwell = self.dwell_sb.value()
         self.cur.waypoints.append(wp)
@@ -289,10 +291,12 @@ class MissionPanel(QWidget):
 
     # ---- robot pose feed-in (so "Set here" works) ----
 
-    def update_robot_pose(self, x: float, y: float, yaw: float) -> None:
+    def update_robot_pose(self, x: float, y: float, yaw: float, draw: bool = True) -> None:
         self._robot_x = x
         self._robot_y = y
-        self.view.set_robot_pose(x, y, yaw)
+        self._robot_yaw = yaw
+        if draw:
+            self.view.set_robot_pose(x, y, yaw)
 
     # ---- executor ----
 

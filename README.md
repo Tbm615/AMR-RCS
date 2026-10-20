@@ -24,16 +24,22 @@ WebSocket.
 - **Software E-STOP:** cancels the Nav2 goal and the mission, streams zero
   velocity and publishes `/amr/estop` ([limits](#safety-notes)).
 - **2D map:** occupancy grid, lidar points (aligned through `/tf_static`),
-  robot footprint, planned path, global/local costmaps. Click to set the
-  initial pose, send a goal (position + heading) or add waypoints.
+  robot footprint, planned path, global/local costmaps. Press and drag an
+  arrow (like RViz's 2D Goal Pose) to send a goal with its heading, set the
+  initial pose, or add waypoints.
 - **Navigation:** live Nav2 state (pending, navigating, reached, canceled,
   aborted, no response), distance and time remaining, cancel.
 - **Missions:** ordered waypoints (checkpoints) with tolerance and dwell,
   loop routes, play / pause / stop; automatic retry when Nav2 drops or
   aborts a goal.
-- **Camera** (compressed JPEG) and **3D view** (point cloud), received only
-  while their page is open to save Wi-Fi, **Status**
-  (speeds, per-topic rates) and **Logs** (`/rosout`).
+- **3D map:** a colored 3D map built live from the camera's depth + color
+  images, each frame placed with the TF at its own timestamp; save / open
+  PLY (also opens `save_run`'s `cloud3d.ply`).
+- **Camera** (compressed JPEG), received only while its page is open to save
+  Wi-Fi, **Status** (speeds, per-topic rates) and **Logs** (`/rosout`).
+- Stays responsive on Windows: connecting never blocks the window, heavy
+  messages are decoded off the GUI thread, and it reconnects by itself after
+  a Wi-Fi drop.
 
 Screenshots (taken from the app driving real Nav2 on a simulated robot) are in
 [`docs/screenshots/`](docs/screenshots/) and throughout the [user guide](docs/USER_GUIDE.md).
@@ -52,9 +58,10 @@ python -m rcs
 
 | Test | What it needs | What it checks |
 |---|---|---|
-| `tests/test_features.py` | nothing | map/scan/path rendering, PointCloud2 and JPEG decoding, TF chains, mission executor incl. retries (31 checks) |
+| `tests/test_features.py` | nothing | map/scan/path rendering, goal/pose/waypoint arrows (press-drag-release), PointCloud2 and JPEG decoding, TF chains, mission executor incl. retries (46 checks) |
 | `tests/test_e2e.py` | nothing (built-in mock rosbridge) | the app connects, subscribes, streams teleop, publishes goals |
 | `tests/test_robot_page.py` | nothing (mock rosbridge with a fake launcher) | Robot programs page: start/stop bringup and Nav2, SLAM, save map (22 checks) |
+| `tests/test_stress.py` | nothing (mock rosbridge `--heavy`: 1000×1000 map and costmap, 4995-point scans, synthetic RGB-D camera with 0.3 s latency) | GUI never stalls > 0.5 s; 3D map walls land within cm of the true walls while the robot turns, colors right; PLY save/open; reconnect after rosbridge dies; unreachable host does not block (24 checks) |
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
 | `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
 

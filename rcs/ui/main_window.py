@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import sys
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -15,7 +16,6 @@ from .. import APP_NAME, __version__
 from ..core.mission import MissionStore
 from ..core.profile import ProfileStore, RobotProfile
 from ..core.ros_client import RosClient, quat_to_yaw
-from ..core.tf_cache import TFCache
 from .panels.camera import CameraPanel
 from .panels.connection import ConnectionPanel
 from .panels.logs import LogsPanel
@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         self.profiles = ProfileStore()
         self.missions = MissionStore()
         self.ros = RosClient(profile=self.profiles.active())
-        self.tf = TFCache()
+        self.tf = self.ros.tf            # filled on the network thread
 
         self._robot_x = 0.0
         self._robot_y = 0.0
@@ -60,9 +60,25 @@ class MainWindow(QMainWindow):
         self._odom_v = 0.0
         self._plan_xy: list = []
         self._nav_state = ""
+        self._page = "conn"
+        # Incoming data only marks things dirty; a 20 Hz timer draws what the
+        # open page shows. Drawing every TF/odom/scan on every page kept the
+        # GUI thread busy enough for Windows to report "Not Responding".
+        self._pose_dirty = False
+        self._scan_msg = None
+        self._scan_dirty = False
+        self._goal = None                # (x, y, yaw) of the active Nav2 goal
+        # newest map / costmaps, applied lazily to the views of the open page
+        self._layers: dict = {}          # kind -> (version, msg, frame_pose)
+        self._layer_ver = 0
+        self._applied: dict = {}         # (id(view), kind) -> version
 
         self._build()
         self._wire()
+        self._render_timer = QTimer(self)
+        self._render_timer.setInterval(50)
+        self._render_timer.timeout.connect(self._render)
+        self._render_timer.start()
 
     # ---- construct UI ----
 
@@ -98,7 +114,7 @@ class MainWindow(QMainWindow):
             ("map", "2D Map"),
             ("nav", "Navigation"),
             ("mission", "Missions"),
-            ("3d", "3D View"),
+            ("3d", "3D Map"),
             ("cam", "Camera"),
             ("logs", "Logs"),
         ]:
@@ -135,7 +151,7 @@ class MainWindow(QMainWindow):
         self.p_map = Map2DPanel()
         self.p_nav = NavigationPanel()
         self.p_mission = MissionPanel(self.missions)
-        self.p_3d = View3DPanel()
+        self.p_3d = View3DPanel(self.ros.cloud_map)
         self.p_cam = CameraPanel()
         self.p_logs = LogsPanel()
 
@@ -174,9 +190,32 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self.sb_estop)
 
     def _show(self, key: str) -> None:
-        self.stack.setCurrentWidget(self._pages[key])
-        self.ros.set_stream_active("image", key == "cam")
-        self.ros.set_stream_active("cloud", key == "3d")
+        self._page = key
+        self._sync_streams()
+        try:
+            self.stack.setCurrentWidget(self._pages[key])
+        except RuntimeError as e:      # e.g. OpenGL refused to start for the 3D page
+            print(f"showing page {key}: {e}", file=sys.stderr)
+        # the page was not drawn while hidden: bring it up to date now
+        self._pose_dirty = True
+        self._scan_dirty = self._scan_msg is not None
+        self._render()
+
+    def _sync_streams(self) -> None:
+        self.ros.set_stream_active("image", self._page == "cam")
+        self.ros.map3d_range = self.p_3d.range.value() if hasattr(self.p_3d, "range") else 4.0
+        on = self.p_3d.wants_stream(self._page == "3d")
+        if on and not self.ros._streams_on.get("map3d"):
+            self.p_3d._rec_since = time.monotonic()
+        if self.ros.profile:
+            t = self.ros.profile.topics
+            self.p_3d.source_hint = (t.camera_depth if self.ros.map3d_source == "rgbd" else t.camera_cloud)
+        self.ros.set_stream_active("map3d", on)
+
+    def _map_views(self):
+        """MapViews on the page that is open (only those get redrawn)."""
+        return {"map": (self.p_map.view,), "nav": (self.p_nav.view,),
+                "mission": (self.p_mission.view,)}.get(self._page, ())
 
     # ---- wire signals ----
 
@@ -201,7 +240,13 @@ class MainWindow(QMainWindow):
         self.ros.image_received.connect(
             lambda _: self.p_cam.set_rate(self.ros.topic_stats["image"].hz
                                           if "image" in self.ros.topic_stats else 0.0))
-        self.ros.cloud_received.connect(self.p_3d.update_pointcloud)
+        self.ros.cloud_updated.connect(self.p_3d.on_cloud_stats)
+        if hasattr(self.p_3d, "rec_btn"):
+            self.p_3d.recording_changed.connect(lambda _on: self._sync_streams())
+            self.p_3d.keep_bg.toggled.connect(lambda _on: self._sync_streams())
+            self.p_3d.range.valueChanged.connect(lambda v: setattr(self.ros, "map3d_range", v))
+            self.p_3d.source_changed.connect(
+                lambda src: (self.ros.set_map3d_source(src), self._sync_streams()))
         self.ros.rosout_received.connect(self.p_logs.append_log)
         self.ros.tf_received.connect(self._on_tf)
         self.ros.nav_status.connect(self._on_nav_state)
@@ -216,17 +261,17 @@ class MainWindow(QMainWindow):
         self.sidebar_estop.toggled.connect(self._set_estop)
 
         # map / nav / mission → ros
-        self.p_map.goal_requested.connect(self.ros.send_nav_goal)
+        self.p_map.goal_requested.connect(self._send_goal)
         self.p_map.cancel_requested.connect(self.ros.cancel_nav_goal)
         self.p_map.set_initial_pose.connect(self.ros.publish_initial_pose)
-        self.p_nav.goal_requested.connect(self.ros.send_nav_goal)
+        self.p_nav.goal_requested.connect(self._send_goal)
         self.p_nav.cancel_requested.connect(self.ros.cancel_nav_goal)
-        self.p_mission.goal_requested.connect(self.ros.send_nav_goal)
+        self.p_mission.goal_requested.connect(self._send_goal)
         self.p_mission.cancel_requested.connect(self.ros.cancel_nav_goal)
         self.p_mission.waypoints_changed.connect(self.p_map.view.set_waypoints)
         self.ros.nav_status.connect(self.p_mission.on_nav_status)
         # "Add waypoint" mode on the 2D Map page appends to the open mission
-        self.p_map.view.pose_clicked.connect(self.p_mission.add_waypoint_at)
+        self.p_map.view.waypoint_requested.connect(self.p_mission.add_waypoint_at)
         self.p_mission.waypoints_changed.connect(self.p_nav.view.set_waypoints)
 
     def _on_connect(self, profile: RobotProfile) -> None:
@@ -273,13 +318,13 @@ class MainWindow(QMainWindow):
         self._odom_y = float(pos.get("y", 0.0))
         self._odom_yaw = quat_to_yaw(p.get("orientation", {}))
         self._odom_v = float(m.get("twist", {}).get("twist", {}).get("linear", {}).get("x", 0.0))
-        self._update_robot_pose()
+        self._pose_dirty = True
 
-    def _on_tf(self, m: dict) -> None:
-        self.tf.ingest(m)
-        self._update_robot_pose()
+    def _on_tf(self, _m=None) -> None:
+        self._pose_dirty = True        # RosClient already put it in self.tf
 
     def _update_robot_pose(self) -> None:
+        """Recompute the robot and laser pose from TF (or odom)."""
         if not self.ros.profile:
             return
         p = self.ros.profile.topics
@@ -303,24 +348,61 @@ class MainWindow(QMainWindow):
             )
         self._laser_x, self._laser_y, self._laser_yaw = laser_pose
 
-        self.p_map.view.set_robot_pose(*pose)
-        self.p_nav.view.set_robot_pose(*pose)
-        self.p_mission.update_robot_pose(*pose)
-        self.p_3d.update_robot_pose(*pose)
-        self.sb_pose.setText(f"pose: x={pose[0]:+.2f} y={pose[1]:+.2f} yaw={pose[2]:+.2f}")
-        now = time.monotonic()
-        if now - getattr(self, "_progress_t", 0.0) > 0.2:      # 5 Hz is plenty
-            self._progress_t = now
-            self._update_progress()
+    def _render(self) -> None:
+        """Draw what changed since the last tick, on the open page only."""
+        views = self._map_views()
+        if self._pose_dirty:
+            self._pose_dirty = False
+            self._update_robot_pose()
+            pose = (self._robot_x, self._robot_y, self._robot_yaw)
+            for v in views:
+                v.set_robot_pose(*pose)
+            self.p_mission.update_robot_pose(*pose, draw=self._page == "mission")
+            self.p_3d.update_robot_pose(*pose)
+            self.sb_pose.setText(f"pose: x={pose[0]:+.2f} y={pose[1]:+.2f} yaw={pose[2]:+.2f}")
+            now = time.monotonic()
+            if now - getattr(self, "_progress_t", 0.0) > 0.2:      # 5 Hz is plenty
+                self._progress_t = now
+                self._update_progress()
+        for kind, (ver, msg, pose) in list(self._layers.items()):
+            targets = list(views)
+            if kind == "map" and self._page == "3d":
+                targets.append(self.p_3d)
+            for v in targets:
+                key = (id(v), kind)
+                if self._applied.get(key) == ver:
+                    continue
+                if kind != "map" and not (v.cost_img if kind == "gcost" else v.local_cost_img).isVisible():
+                    continue            # overlay off: applied when it is switched on
+                self._applied[key] = ver
+                if kind == "map":
+                    v.set_occupancy(msg)
+                elif kind == "gcost":
+                    v.set_global_costmap(msg, pose)
+                else:
+                    v.set_local_costmap(msg, pose)
+        if self._scan_dirty and self._scan_msg is not None:
+            self._scan_dirty = False
+            for v in views:
+                if v is not self.p_mission.view:
+                    v.set_scan(self._scan_msg, self._laser_x, self._laser_y, self._laser_yaw)
 
     def _on_scan(self, m: dict) -> None:
-        self.p_map.view.set_scan(m, self._laser_x, self._laser_y, self._laser_yaw)
-        self.p_nav.view.set_scan(m, self._laser_x, self._laser_y, self._laser_yaw)
+        self._scan_msg = m
+        self._scan_dirty = True
+
+    def _set_layer(self, kind: str, msg: dict, pose=(0.0, 0.0, 0.0)) -> None:
+        self._layer_ver += 1
+        self._layers[kind] = (self._layer_ver, msg, pose)
 
     def _on_map(self, m: dict) -> None:
-        self.p_map.view.set_occupancy(m)
-        self.p_nav.view.set_occupancy(m)
-        self.p_mission.view.set_occupancy(m)
+        self._set_layer("map", m)
+
+    def _send_goal(self, x: float, y: float, yaw: float) -> None:
+        self._goal = (x, y, yaw)
+        for v in (self.p_map.view, self.p_nav.view, self.p_mission.view):
+            v.set_goal(x, y, yaw)
+        self.ros.send_nav_goal(x, y, yaw)
 
     def _frame_in_map(self, m: dict):
         """Pose of a message's header frame in the map frame, or None if TF
@@ -335,15 +417,13 @@ class MainWindow(QMainWindow):
         pose = self._frame_in_map(m)
         if pose is None:
             return
-        self.p_map.view.set_global_costmap(m, pose)
-        self.p_nav.view.set_global_costmap(m, pose)
+        self._set_layer("gcost", m, pose)
 
     def _on_local_costmap(self, m: dict) -> None:
         pose = self._frame_in_map(m)
         if pose is None:
             return
-        self.p_map.view.set_local_costmap(m, pose)
-        self.p_nav.view.set_local_costmap(m, pose)
+        self._set_layer("lcost", m, pose)
 
     def _on_plan(self, m: dict) -> None:
         self.p_map.view.set_path(m)
@@ -357,6 +437,10 @@ class MainWindow(QMainWindow):
     # rosbridge (Humble) cannot subscribe to the NavigateToPose feedback topic.
     def _on_nav_state(self, state: str) -> None:
         self._nav_state = state
+        if state in ("succeeded", "canceled", "aborted"):
+            self._goal = None
+            for v in (self.p_map.view, self.p_nav.view, self.p_mission.view):
+                v.set_goal(None, None)
         if state not in ("active", "pending"):
             self._plan_xy = []
             if state == "succeeded":

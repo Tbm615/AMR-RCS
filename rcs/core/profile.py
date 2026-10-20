@@ -39,7 +39,10 @@ class Topics:
     local_costmap: str = "/local_costmap/costmap"
     plan: str = "/plan"
     camera_image: str = "/camera/color/image_raw/compressed"
-    camera_cloud: str = "/camera/depth/points"
+    # 3D map sources: depth + color images (light, default) or a PointCloud2
+    camera_depth: str = "/camera/depth/image_raw/compressedDepth"
+    camera_info: str = "/camera/depth/camera_info"
+    camera_cloud: str = "/camera/depth_registered/points"
     rosout: str = "/rosout"
     estop_topic: str = "/amr/estop"
     goal_pose: str = "/goal_pose"
@@ -60,7 +63,7 @@ class Limits:
     footprint_half_length: float = 0.45
     footprint_half_width: float = 0.30
     laser_offset_x: float = 0.40      # m, used only if TF for laser_frame is absent
-    cloud_throttle_ms: int = 500      # min interval between PointCloud2 frames
+    cloud_throttle_ms: int = 500      # min interval between depth / PointCloud2 frames
     image_throttle_ms: int = 100      # min interval between camera frames
 
 
@@ -85,8 +88,11 @@ class RobotProfile:
 
     @classmethod
     def from_dict(cls, d: dict) -> "RobotProfile":
-        topics = Topics(**d.get("topics", {}))
-        limits = Limits(**d.get("limits", {}))
+        # ignore keys this version doesn't know (profile saved by a newer RCS)
+        topics = Topics(**{k: v for k, v in d.get("topics", {}).items()
+                           if k in Topics.__dataclass_fields__})
+        limits = Limits(**{k: v for k, v in d.get("limits", {}).items()
+                           if k in Limits.__dataclass_fields__})
         return cls(
             id=d.get("id") or str(uuid.uuid4()),
             name=d.get("name", "robot"),

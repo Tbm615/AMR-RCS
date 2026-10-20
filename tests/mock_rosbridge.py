@@ -6,6 +6,12 @@ Implements the subset of the rosbridge v2.0 protocol that RCS actually uses:
   - "subscribe" / "unsubscribe"
   - "call_service" (server echoes an empty success response)
   - periodic server-side publishes of /map, /scan_filtered, /odom, /tf
+  - throttle_rate on subscriptions, like the real rosbridge
+
+With --heavy it also sends robot-sized traffic: a 1000 x 1000 SLAM map and
+global costmap, 4995-point scans at 20 Hz, a local costmap, and a synthetic
+RGB-D camera (tests/synthetic_rgbd.py) whose frames arrive CAMERA_DELAY late,
+as they do over WiFi.
 
 Records every message received so a test can assert on it.
 """
@@ -16,17 +22,31 @@ import asyncio
 import base64
 import json
 import math
+import os
 import struct
+import sys
 import time
 from typing import Dict, List
 
 import numpy as np
 import websockets
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # synthetic_rgbd
+
+
+HEAVY = False
+CAMERA_DELAY = 0.3      # s between capture (header stamp) and delivery
+
+
+def _stamp(t: float) -> dict:
+    return {"sec": int(t), "nanosec": int((t - int(t)) * 1e9)}
+
 
 class Hub:
     def __init__(self) -> None:
         self.subs_by_topic: Dict[str, set] = {}
+        self.throttle: Dict[tuple, float] = {}     # (ws, topic) -> s
+        self.last_sent: Dict[tuple, float] = {}
         self.ever_subscribed: set = set()
         self.received_publishes: List[dict] = []
         self.service_calls: List[dict] = []
@@ -97,7 +117,7 @@ def _oc_grid(now_s: float) -> dict:
         "op": "publish",
         "topic": "/map",
         "msg": {
-            "header": {"frame_id": "map", "stamp": {"sec": int(now_s), "nanosec": 0}},
+            "header": {"frame_id": "map", "stamp": _stamp(now_s)},
             "info": {
                 "resolution": 0.1, "width": w, "height": h,
                 "origin": {"position": {"x": -2.5, "y": -2.5, "z": 0.0},
@@ -115,8 +135,7 @@ def _scan(now_s: float) -> dict:
         "op": "publish",
         "topic": "/scan_filtered",
         "msg": {
-            "header": {"frame_id": "laser_frame",
-                       "stamp": {"sec": int(now_s), "nanosec": 0}},
+            "header": {"frame_id": "laser_frame", "stamp": _stamp(now_s)},
             "angle_min": -math.pi, "angle_max": math.pi,
             "angle_increment": 2 * math.pi / n,
             "time_increment": 0.0, "scan_time": 0.05,
@@ -131,7 +150,7 @@ def _odom(now_s: float, x: float, y: float, yaw: float, vx: float, wz: float) ->
         "op": "publish",
         "topic": "/odom",
         "msg": {
-            "header": {"frame_id": "odom", "stamp": {"sec": int(now_s), "nanosec": 0}},
+            "header": {"frame_id": "odom", "stamp": _stamp(now_s)},
             "child_frame_id": "base_link",
             "pose": {"pose": {
                 "position": {"x": x, "y": y, "z": 0.0},
@@ -146,7 +165,7 @@ def _odom(now_s: float, x: float, y: float, yaw: float, vx: float, wz: float) ->
 
 
 def _tf(now_s: float, x: float, y: float, yaw: float) -> dict:
-    stamp = {"sec": int(now_s), "nanosec": 0}
+    stamp = _stamp(now_s)
     def tr(parent, child, tx, ty, qz, qw):
         return {
             "header": {"stamp": stamp, "frame_id": parent},
@@ -164,6 +183,76 @@ def _tf(now_s: float, x: float, y: float, yaw: float) -> dict:
             tr("base_link", "laser_frame", 0.40, 0.0, 0.0, 1.0),
         ]},
     }
+
+
+_BIG: Dict[str, str] = {}
+
+
+def _big_grid(topic: str, kind: str) -> str:
+    """1000 x 1000 OccupancyGrid at 5 cm, JSON-encoded once (as big as a real SLAM map)."""
+    if topic not in _BIG:
+        w = h = 1000
+        yy, xx = np.mgrid[0:h, 0:w]
+        g = np.full((h, w), -1, np.int8)
+        room = (abs(xx - 500) < 160) & (abs(yy - 500) < 120)
+        g[room] = 0
+        wall = room & ((abs(xx - 500) >= 158) | (abs(yy - 500) >= 118))
+        g[wall] = 100
+        if kind == "cost":
+            g = np.where(room, np.where(wall, 100, 0), -1).astype(np.int8)
+        _BIG[topic] = json.dumps({"op": "publish", "topic": topic, "msg": {
+            "header": {"frame_id": "map", "stamp": _stamp(time.time())},
+            "info": {"resolution": 0.05, "width": w, "height": h,
+                     "origin": {"position": {"x": -25.0, "y": -25.0, "z": 0.0},
+                                "orientation": {"x": 0, "y": 0, "z": 0, "w": 1}}},
+            "data": g.reshape(-1).tolist()}})
+    return _BIG[topic]
+
+
+def _heavy_scan(now_s: float) -> dict:
+    m = _scan(now_s)
+    n = 4995
+    m["msg"]["angle_increment"] = 2 * math.pi / n
+    m["msg"]["ranges"] = [None if i % 97 == 0 else 2.0 + 0.5 * math.sin(i * 0.01) for i in range(n)]
+    return m
+
+
+def _local_costmap(now_s: float, x: float, y: float) -> dict:
+    w = h = 120
+    return {"op": "publish", "topic": "/local_costmap/costmap", "msg": {
+        "header": {"frame_id": "odom", "stamp": _stamp(now_s)},
+        "info": {"resolution": 0.05, "width": w, "height": h,
+                 "origin": {"position": {"x": x - 3, "y": y - 3, "z": 0.0},
+                            "orientation": {"x": 0, "y": 0, "z": 0, "w": 1}}},
+        "data": [(i * 7) % 100 for i in range(w * h)]}}
+
+
+def _wants(ws, topic: str, now: float) -> bool:
+    """rosbridge throttle_rate: at most one message per interval per subscriber."""
+    key = (ws, topic)
+    thr = HUB.throttle.get(key, 0.0)
+    if thr and now - HUB.last_sent.get(key, 0.0) < thr:
+        return False
+    HUB.last_sent[key] = now
+    return True
+
+
+async def _deliver(topic: str, payload) -> None:
+    now = time.time()
+    raw = None
+    for ws in list(HUB.subs_by_topic.get(topic, set())):
+        if not _wants(ws, topic, now):
+            continue
+        if raw is None:
+            raw = payload if isinstance(payload, str) else json.dumps(payload)
+        try:
+            await ws.send(raw)
+        except Exception:
+            HUB.subs_by_topic[topic].discard(ws)
+
+
+def _subscribed(topic: str) -> bool:
+    return bool(HUB.subs_by_topic.get(topic))
 
 
 async def ticker():
@@ -189,21 +278,51 @@ async def ticker():
         y += vx * math.sin(yaw) * dt
 
         msgs = [_tf(now, x, y, yaw), _odom(now, x, y, yaw, vx, wz)]
-        if tick % 4 == 0:
-            msgs.append(_scan(now))
-        if tick % 20 == 0:
-            msgs.append(_oc_grid(now))
+        if HEAVY:
+            msgs.append(_heavy_scan(now))
+            if tick % 40 == 0:
+                await _deliver("/map", _big_grid("/map", "map"))
+            if tick % 20 == 0:
+                await _deliver("/global_costmap/costmap", _big_grid("/global_costmap/costmap", "cost"))
+            if tick % 4 == 0:
+                msgs.append(_local_costmap(now, x, y))
+            await _camera(now, x, y, yaw, tick)
+        else:
+            if tick % 4 == 0:
+                msgs.append(_scan(now))
+            if tick % 20 == 0:
+                msgs.append(_oc_grid(now))
         if tick % 10 == 0:
             msgs.append(LAUNCHER.state_msg())
-        for topic, m in [(mm["topic"], mm) for mm in msgs]:
-            subs = HUB.subs_by_topic.get(topic, set())
-            for ws in list(subs):
-                try:
-                    await ws.send(json.dumps(m))
-                except Exception:
-                    HUB.subs_by_topic[topic].discard(ws)
+        for m in msgs:
+            await _deliver(m["topic"], m)
         tick += 1
         await asyncio.sleep(dt)
+
+
+_CAM_QUEUE: list = []     # (deliver_at, topic, msg)
+
+
+async def _camera(now: float, x: float, y: float, yaw: float, tick: int) -> None:
+    import synthetic_rgbd as cam
+    if tick % 40 == 0 or not hasattr(_camera, "static_sent"):
+        _camera.static_sent = True
+        await _deliver("/tf_static", {"op": "publish", "topic": "/tf_static",
+                                      "msg": cam.static_tf_msg(_stamp(now))})
+    depth_t, color_t = "/camera/depth/image_raw/compressedDepth", "/camera/color/image_raw/compressed"
+    if tick % 2 == 0 and (_subscribed(depth_t) or _subscribed(color_t)):
+        st = _stamp(now)
+        depth, color = cam.render(x, y, yaw)
+        if _subscribed(depth_t):
+            _CAM_QUEUE.append((now + CAMERA_DELAY, depth_t, cam.compressed_depth_msg(depth, st)))
+        if _subscribed(color_t):
+            _CAM_QUEUE.append((now + CAMERA_DELAY, color_t, cam.jpeg_msg(color, st)))
+    if tick % 10 == 0:
+        await _deliver("/camera/depth/camera_info", {"op": "publish", "topic": "/camera/depth/camera_info",
+                                                      "msg": cam.camera_info_msg(_stamp(now))})
+    while _CAM_QUEUE and _CAM_QUEUE[0][0] <= now:
+        _, topic, msg = _CAM_QUEUE.pop(0)
+        await _deliver(topic, {"op": "publish", "topic": topic, "msg": msg})
 
 
 async def handle(ws):
@@ -219,6 +338,11 @@ async def handle(ws):
             if op == "subscribe":
                 topic = m["topic"]
                 HUB.subs_by_topic.setdefault(topic, set()).add(ws)
+                HUB.throttle[(ws, topic)] = float(m.get("throttle_rate") or 0) / 1000.0
+                if topic == "/tf_static" and HEAVY:
+                    import synthetic_rgbd as cam
+                    await send(ws, {"op": "publish", "topic": "/tf_static",
+                                    "msg": cam.static_tf_msg(_stamp(time.time()))})
                 HUB.ever_subscribed.add(topic)   # durable record across disconnect
             elif op == "unsubscribe":
                 topic = m.get("topic", "")
@@ -265,7 +389,11 @@ def main():
     ap.add_argument("--port", type=int, default=9090)
     ap.add_argument("--duration", type=float, default=None,
                     help="exit after this many seconds (for CI)")
+    ap.add_argument("--heavy", action="store_true",
+                    help="robot-sized traffic: big map/costmap, 4995-point scans, RGB-D camera")
     args = ap.parse_args()
+    global HEAVY
+    HEAVY = args.heavy
     asyncio.run(main_async(args.host, args.port, args.duration))
 
 

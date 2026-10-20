@@ -40,7 +40,7 @@ _TOPICS = [
     ("local_costmap", "Local costmap", True),
     ("plan", "Planned path  /plan", False),
     ("image", "Camera image (while its page is open)", True),
-    ("cloud", "Point cloud (while 3D view is open)", True),
+    ("depth", "Camera depth (while recording the 3D map)", True),
     ("rosout", "Logs  /rosout", False),
 ]
 

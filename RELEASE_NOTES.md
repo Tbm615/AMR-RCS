@@ -8,6 +8,35 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### Changes in v0.4.0: 3D map, goal arrows, no more freezes
+
+- **No more "Not Responding" on Windows.** Connecting (and every automatic
+  reconnect, e.g. after a Wi-Fi drop) used to block the window for up to
+  10 s, again and again while the robot did not answer. Connecting now
+  happens in the background, and the app reconnects by itself within a few
+  seconds. A manual Disconnect followed by Connect works again (it used to
+  stop the network loop for good).
+- Big maps, costmaps, lidar scans and camera frames are decoded off the GUI
+  thread, and only the page you are looking at is redrawn (at most 20 times
+  a second). The lidar points are drawn about 40× faster. The Logs page keeps
+  the newest 3000 lines (it used to grow forever and slow down on long runs).
+  Commands are no longer queued while offline, so nothing stale reaches the
+  robot when the link comes back.
+- **New 3D Map page** (replaces 3D View): a colored 3D map built while you
+  drive, from the camera's depth + color images (about 1 MB/s over Wi-Fi).
+  Each frame is placed with the full 3D TF at the moment it was taken, so the
+  map no longer comes out rotated or smeared when the robot turns. Save and
+  open it as PLY; it also opens the `cloud3d.ply` of a `save_run` result.
+  Same look and controls as the report's 3D viewer. On the robot it needs
+  `ros-humble-compressed-depth-image-transport`.
+- **Goals with an arrow**, like RViz's *2D Goal Pose*: press on the
+  destination, drag toward the heading, release. The goal stays on the map
+  as a green arrow. The same arrow sets the initial pose and mission
+  waypoints (which now get a heading too, shown on the map). Right-drag pans
+  the map.
+- Crashes, including hard ones inside Qt/OpenGL, now leave a stack trace in
+  the app log (`%TEMP%\rcs.log` on Windows).
+
 ### Changes in v0.3.0: start bringup and Nav2 from the app
 
 - New **Robot programs** page: start and stop the robot base (bringup) and navigation without a terminal on the robot. Navigation runs on a saved map, or builds a new map with SLAM while you drive, and you can save that map under a name. Each part shows its state, how long it has been running, and its last log lines when something fails.

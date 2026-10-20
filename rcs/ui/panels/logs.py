@@ -1,7 +1,14 @@
-"""Logs panel: subscribes to /rosout."""
+"""Logs panel: subscribes to /rosout.
+
+Lines are buffered and appended in batches a few times a second, and the
+view keeps only the newest MAX_LINES: an unbounded log made every append
+slower until the GUI stalled on long runs with a chatty robot.
+"""
 from __future__ import annotations
 
+import html
 import time
+from collections import deque
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor, QTextCursor
@@ -21,12 +28,20 @@ _COLOR = {
 }
 
 
+MAX_LINES = 3000
+
+
 class LogsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._min_level = 20
         self._autoscroll = True
+        self._pending: deque = deque(maxlen=MAX_LINES)
         self._build()
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setInterval(250)
+        self._flush_timer.timeout.connect(self._flush)
+        self._flush_timer.start()
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
@@ -40,7 +55,7 @@ class LogsPanel(QWidget):
         self.autoscroll = QCheckBox("Auto-scroll"); self.autoscroll.setChecked(True)
         self.autoscroll.toggled.connect(lambda b: setattr(self, "_autoscroll", b))
         clear = QPushButton("Clear")
-        clear.clicked.connect(lambda: self.text.clear())
+        clear.clicked.connect(lambda: (self._pending.clear(), self.text.clear()))
         top.addWidget(QLabel("Min level:"))
         top.addWidget(self.level)
         top.addWidget(self.autoscroll)
@@ -50,6 +65,7 @@ class LogsPanel(QWidget):
 
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
+        self.text.setMaximumBlockCount(MAX_LINES)
         self.text.setStyleSheet("font-family: monospace; font-size: 12px; background:#0b0d12;")
         root.addWidget(self.text, 1)
 
@@ -57,8 +73,8 @@ class LogsPanel(QWidget):
         lvl = int(msg.get("level", 20))
         if lvl < self._min_level:
             return
-        name = msg.get("name", "?")
-        text = msg.get("msg") or msg.get("message") or ""
+        name = html.escape(str(msg.get("name", "?")))
+        text = html.escape(str(msg.get("msg") or msg.get("message") or ""))
         lvl_str = _LEVEL.get(lvl, str(lvl))
         color = _COLOR.get(lvl_str, "#c6cad6")
         ts = time.strftime("%H:%M:%S")
@@ -66,6 +82,16 @@ class LogsPanel(QWidget):
                f'<span style="color:{color}; font-weight:600;">[{lvl_str:5}]</span>  ' \
                f'<span style="color:#8b93a7;">{name}</span>  ' \
                f'<span style="color:#e6e8ee;">{text}</span>'
-        self.text.appendHtml(line)
+        self._pending.append(line)
+
+    def _flush(self) -> None:
+        if not self._pending or not self.isVisible():
+            return
+        lines = list(self._pending)
+        self._pending.clear()
+        self.text.setUpdatesEnabled(False)
+        for line in lines:                  # one block per line, so the cap counts lines
+            self.text.appendHtml(line)
+        self.text.setUpdatesEnabled(True)
         if self._autoscroll:
             self.text.moveCursor(QTextCursor.End)

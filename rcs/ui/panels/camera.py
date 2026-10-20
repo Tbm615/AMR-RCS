@@ -1,8 +1,9 @@
-"""Camera stream panel. Expects CompressedImage (JPEG) frames as bytes."""
+"""Camera stream panel. Takes frames as QImage (decoded off the GUI thread
+by RosClient) or as JPEG bytes."""
 from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 
@@ -21,7 +22,13 @@ class CameraPanel(QWidget):
         v.addLayout(h)
         self._last_pix: QPixmap | None = None
 
-    def set_frame(self, data: bytes) -> None:
+    def set_frame(self, data) -> None:
+        if isinstance(data, QImage):
+            if data.isNull():
+                return
+            self._last_pix = QPixmap.fromImage(data)
+            self._render()
+            return
         pm = QPixmap()
         if pm.loadFromData(QByteArray(data), "JPG"):
             self._last_pix = pm
@@ -36,6 +43,8 @@ class CameraPanel(QWidget):
 
     def _render(self) -> None:
         if not self._last_pix:
+            return
+        if not self.isVisible():
             return
         self.image_lbl.setPixmap(self._last_pix.scaled(
             self.image_lbl.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
