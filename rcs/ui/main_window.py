@@ -1,4 +1,4 @@
-"""Main window — sidebar + stacked panels, central controller for signals."""
+"""Main window — sidebar + page workspace (docks), central controller for signals."""
 from __future__ import annotations
 
 import math
@@ -8,13 +8,13 @@ import time
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
-    QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QPushButton,
-    QStackedWidget, QStatusBar, QVBoxLayout, QWidget,
+    QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu,
+    QPushButton, QStatusBar, QVBoxLayout, QWidget,
 )
 
 from .. import APP_NAME, __version__
 from ..core.mission import MissionStore
-from ..core.profile import ProfileStore, RobotProfile
+from ..core.profile import ProfileStore, RobotProfile, load_settings, save_settings
 from ..core.ros_client import RosClient, quat_to_yaw
 from .panels.camera import CameraPanel
 from .panels.connection import ConnectionPanel
@@ -26,6 +26,20 @@ from .panels.status import StatusPanel
 from .panels.robot import RobotPanel
 from .panels.teleop import TeleopPanel
 from .panels.view3d import View3DPanel
+from .workspace import PRESETS, Workspace
+
+PAGES = [
+    ("conn", "Connection"),
+    ("robot", "Robot programs"),
+    ("status", "Status"),
+    ("teleop", "Teleop"),
+    ("map", "2D Map"),
+    ("nav", "Navigation"),
+    ("mission", "Missions"),
+    ("3d", "3D Map"),
+    ("cam", "Camera"),
+    ("logs", "Logs"),
+]
 
 
 class _NavButton(QPushButton):
@@ -35,6 +49,15 @@ class _NavButton(QPushButton):
         self.setCheckable(True)
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumHeight(42)
+        self.mods = Qt.NoModifier       # keyboard modifiers of the last mouse click
+
+    def mouseReleaseEvent(self, ev) -> None:
+        self.mods = ev.modifiers()
+        super().mouseReleaseEvent(ev)
+
+    def take_mods(self):
+        m, self.mods = self.mods, Qt.NoModifier
+        return m
 
 
 class MainWindow(QMainWindow):
@@ -60,7 +83,7 @@ class MainWindow(QMainWindow):
         self._odom_v = 0.0
         self._plan_xy: list = []
         self._nav_state = ""
-        self._page = "conn"
+        self._visible: set = set()       # pages shown on screen right now
         # Incoming data only marks things dirty; a 20 Hz timer draws what the
         # open page shows. Drawing every TF/odom/scan on every page kept the
         # GUI thread busy enough for Windows to report "Not Responding".
@@ -106,23 +129,24 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
 
         self.btns = {}
-        for key, label in [
-            ("conn", "Connection"),
-            ("robot", "Robot programs"),
-            ("status", "Status"),
-            ("teleop", "Teleop"),
-            ("map", "2D Map"),
-            ("nav", "Navigation"),
-            ("mission", "Missions"),
-            ("3d", "3D Map"),
-            ("cam", "Camera"),
-            ("logs", "Logs"),
-        ]:
+        for key, label in PAGES:
             b = _NavButton(label)
+            b.setToolTip("Click: show here · Ctrl+click: open beside · right-click: more")
+            b.setContextMenuPolicy(Qt.CustomContextMenu)
+            b.customContextMenuRequested.connect(lambda _p, k=key: self._page_menu(k))
             self.nav_group.addButton(b)
             sv.addWidget(b)
             self.btns[key] = b
         sv.addStretch(1)
+
+        self.layout_btn = QPushButton("▦  Layout")
+        self.layout_btn.setObjectName("NavButton")
+        self.layout_btn.setToolTip("Show several pages at once")
+        lm = QMenu(self.layout_btn)
+        for name, label in PRESETS:
+            lm.addAction(label, lambda n=name: self.apply_layout(n))
+        self.layout_btn.setMenu(lm)
+        sv.addWidget(self.layout_btn)
 
         est_frame = QFrame()
         est_frame.setObjectName("EstopBar")
@@ -139,9 +163,9 @@ class MainWindow(QMainWindow):
 
         root.addWidget(side)
 
-        # stacked content area
-        self.stack = QStackedWidget()
-        root.addWidget(self.stack, 1)
+        # page area: every page is a dock (split, tab or float it)
+        self.workspace = Workspace()
+        root.addWidget(self.workspace, 1)
 
         # instantiate panels
         self.p_conn = ConnectionPanel(self.profiles)
@@ -167,12 +191,18 @@ class MainWindow(QMainWindow):
             "cam": self.p_cam,
             "logs": self.p_logs,
         }
-        for p in self._pages.values():
-            self.stack.addWidget(p)
+        for key, label in PAGES:
+            self.workspace.add_page(key, label, self._pages[key])
+        self.workspace.no_float = {"3d"}     # see workspace.py: GL context per window
+        self.workspace.visible_changed.connect(self._on_visible_changed)
+        self.workspace.active_changed.connect(self._on_active_changed)
 
         for key, btn in self.btns.items():
-            btn.clicked.connect(lambda _c=False, k=key: self._show(k))
-        self.btns["conn"].setChecked(True)
+            btn.clicked.connect(lambda _c=False, k=key, b=btn: self._show(
+                k, "right" if b.take_mods() & Qt.ControlModifier else "replace"))
+        saved = load_settings().get("layout")
+        if not (saved and self.workspace.restore_layout(saved)):
+            self.workspace.apply_preset("single", "conn")
 
         # status bar
         sb = QStatusBar()
@@ -189,22 +219,53 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(QLabel("   |   "))
         sb.addPermanentWidget(self.sb_estop)
 
-    def _show(self, key: str) -> None:
-        self._page = key
-        self._sync_streams()
+    def _show(self, key: str, where: str = "replace") -> None:
+        """Show a page: 'replace' (in place of the page in use, like a plain
+        sidebar click), 'tab', 'right', 'below' or 'float'."""
         try:
-            self.stack.setCurrentWidget(self._pages[key])
+            self.workspace.show_page(key, where)
         except RuntimeError as e:      # e.g. OpenGL refused to start for the 3D page
             print(f"showing page {key}: {e}", file=sys.stderr)
-        # the page was not drawn while hidden: bring it up to date now
-        self._pose_dirty = True
-        self._scan_dirty = self._scan_msg is not None
-        self._render()
+        self._on_visible_changed()
+
+    def active_page(self) -> str:
+        return self.workspace.active
+
+    def apply_layout(self, name: str) -> None:
+        self.workspace.apply_preset(name, self.workspace.active or "conn")
+        self._on_visible_changed()
+
+    def _page_menu(self, key: str) -> None:
+        self.workspace.page_menu(key).exec(self.btns[key].mapToGlobal(self.btns[key].rect().topRight()))
+
+    def _on_active_changed(self, key: str) -> None:
+        if key in self.btns:
+            self.btns[key].setChecked(True)
+
+    def _on_visible_changed(self) -> None:
+        vis = self.workspace.visible_keys()
+        newly = vis - self._visible
+        self._visible = vis
+        for k, b in self.btns.items():
+            open_ = k in self.workspace.open_keys()
+            if b.property("open") != open_:
+                b.setProperty("open", open_)
+                b.style().unpolish(b); b.style().polish(b)
+        self._sync_streams()
+        if newly:
+            # those pages were not drawn while hidden: bring them up to date now
+            self._pose_dirty = True
+            self._scan_dirty = self._scan_msg is not None
+            self._render()
+
+    def closeEvent(self, ev) -> None:
+        save_settings({"layout": self.workspace.save_layout()})
+        super().closeEvent(ev)
 
     def _sync_streams(self) -> None:
-        self.ros.set_stream_active("image", self._page == "cam")
+        self.ros.set_stream_active("image", "cam" in self._visible)
         self.ros.map3d_range = self.p_3d.range.value() if hasattr(self.p_3d, "range") else 4.0
-        on = self.p_3d.wants_stream(self._page == "3d")
+        on = self.p_3d.wants_stream("3d" in self._visible)
         if on and not self.ros._streams_on.get("map3d"):
             self.p_3d._rec_since = time.monotonic()
         if self.ros.profile:
@@ -213,9 +274,9 @@ class MainWindow(QMainWindow):
         self.ros.set_stream_active("map3d", on)
 
     def _map_views(self):
-        """MapViews on the page that is open (only those get redrawn)."""
-        return {"map": (self.p_map.view,), "nav": (self.p_nav.view,),
-                "mission": (self.p_mission.view,)}.get(self._page, ())
+        """MapViews on the pages that are on screen (only those get redrawn)."""
+        views = {"map": self.p_map.view, "nav": self.p_nav.view, "mission": self.p_mission.view}
+        return tuple(v for k, v in views.items() if k in self._visible)
 
     # ---- wire signals ----
 
@@ -253,7 +314,7 @@ class MainWindow(QMainWindow):
         self.ros.nav_status.connect(self.p_nav.set_status)
         self.ros.estop_received.connect(self._on_estop_remote)
 
-        self.p_robot.open_page.connect(lambda k: self.btns[k].click())
+        self.p_robot.open_page.connect(lambda k: self._show(k))
 
         # teleop → ros
         self.p_teleop.cmd_vel.connect(self.ros.publish_cmd_vel)
@@ -349,7 +410,7 @@ class MainWindow(QMainWindow):
         self._laser_x, self._laser_y, self._laser_yaw = laser_pose
 
     def _render(self) -> None:
-        """Draw what changed since the last tick, on the open page only."""
+        """Draw what changed since the last tick, on the pages on screen only."""
         views = self._map_views()
         if self._pose_dirty:
             self._pose_dirty = False
@@ -357,7 +418,7 @@ class MainWindow(QMainWindow):
             pose = (self._robot_x, self._robot_y, self._robot_yaw)
             for v in views:
                 v.set_robot_pose(*pose)
-            self.p_mission.update_robot_pose(*pose, draw=self._page == "mission")
+            self.p_mission.update_robot_pose(*pose, draw="mission" in self._visible)
             self.p_3d.update_robot_pose(*pose)
             self.sb_pose.setText(f"pose: x={pose[0]:+.2f} y={pose[1]:+.2f} yaw={pose[2]:+.2f}")
             now = time.monotonic()
@@ -366,7 +427,7 @@ class MainWindow(QMainWindow):
                 self._update_progress()
         for kind, (ver, msg, pose) in list(self._layers.items()):
             targets = list(views)
-            if kind == "map" and self._page == "3d":
+            if kind == "map" and "3d" in self._visible:
                 targets.append(self.p_3d)
             for v in targets:
                 key = (id(v), kind)

@@ -109,7 +109,7 @@ def main() -> int:
 
     rp.goto_map.click()
     app.processEvents()
-    check("'Open 2D Map' switches page", w.stack.currentWidget() is w.p_map)
+    check("'Open 2D Map' switches page", w.active_page() == "map" and w.p_map.isVisible())
     w.btns["robot"].click()
 
     wait_until(rp.base.stop_btn.isEnabled, 3)

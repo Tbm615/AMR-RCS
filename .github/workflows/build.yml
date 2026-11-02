@@ -52,6 +52,9 @@ jobs:
       - name: Robot programs page against mock launcher
         run: python tests/test_robot_page.py
 
+      - name: Page layout (split, tabs, page windows, presets)
+        run: python tests/test_layout.py
+
       - name: Responsiveness, reconnect and 3D map under robot-sized traffic
         # shared CI runners are slower than an operator PC: allow longer stalls
         env:

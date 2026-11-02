@@ -161,6 +161,30 @@ reconnecting every 2 seconds until you click **Disconnect**.
 - **Status bar (bottom):** active robot and address, connection state,
   robot pose in the map (`x`, `y`, `yaw` in rad), E-STOP state.
 
+**Several pages at once.** A sidebar click shows that page in place of the
+one you are using, as before. To see more than one page:
+
+- **Ctrl+click** a sidebar entry: the page opens to the right of the page in
+  use (for example drive with Teleop while watching the 2D Map).
+- **Right-click** a sidebar entry, or a page's tab: *Show here*, *Open as a
+  tab*, *Open beside (right)*, *Open below*, *Open in a new window* (handy
+  on a second monitor), *Move back to the main window*, *Close*.
+- **▦ Layout** (above E-STOP) sets up the usual combinations in one click:
+  *Drive* (Teleop + 2D Map), *Mapping* (2D Map + 3D Map), *Monitor*
+  (2D Map + Camera + Status), *Missions* (Missions + Camera), or back to
+  *Single page*.
+- Drag the bar between two pages to resize them; drag a tab to reorder it;
+  the **×** on a tab closes that page. Closing a page window closes its
+  pages. Pages that are open are shown brighter in the sidebar; the one you
+  are using is highlighted.
+- The layout, including page windows and their position, is kept when you
+  close the app and comes back at the next start.
+- The 3D Map can be split and tabbed but not opened in its own window yet.
+
+Pages you cannot see (closed, or behind another tab) are not drawn, and the
+camera and 3D map only receive data while their page is on screen, so extra
+pages cost Wi-Fi only while you look at them.
+
 All map views share the same controls:
 
 - **Mouse wheel:** zoom. **Right-drag** (or middle-drag): pan.

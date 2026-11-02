@@ -28,6 +28,24 @@ MISSIONS_PATH = CONFIG_DIR / "missions.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 
+def load_settings() -> dict:
+    """App-wide UI settings (window layout…); {} if missing or unreadable."""
+    try:
+        data = json.loads(SETTINGS_PATH.read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_settings(updates: dict) -> None:
+    data = load_settings()
+    data.update(updates)
+    try:
+        SETTINGS_PATH.write_text(json.dumps(data, indent=2))
+    except OSError:
+        pass
+
+
 @dataclass
 class Topics:
     """Topic/frame mapping for one robot. Defaults match this workspace's bringup."""

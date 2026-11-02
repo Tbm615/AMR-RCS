@@ -35,6 +35,25 @@ QPushButton#NavButton {{
 }}
 QPushButton#NavButton:hover {{ background: #141821; color: #ffffff; }}
 QPushButton#NavButton:checked {{ background: #161b27; color: #ffffff; border-left: 3px solid {ACCENT}; }}
+QPushButton#NavButton[open="true"] {{ color: #ffffff; border-left: 3px solid #2a3a5c; }}
+QPushButton#NavButton[open="true"]:checked {{ border-left: 3px solid {ACCENT}; }}
+QPushButton#NavButton::menu-indicator {{ image: none; width: 0; }}
+
+QSplitter::handle {{ background: #1a1d26; }}
+QSplitter::handle:hover {{ background: {ACCENT}; }}
+QTabWidget::pane {{ border: none; }}
+QTabBar {{ background: #0b0d12; }}
+QTabBar::tab {{ background: #0b0d12; color: {MUTED}; padding: 6px 14px; border: none;
+                border-bottom: 2px solid transparent; }}
+QTabBar::tab:selected {{ color: #ffffff; border-bottom: 2px solid {ACCENT}; background: #141821; }}
+QTabBar::tab:hover {{ color: #ffffff; }}
+QTabBar::close-button {{ image: url("{CLOSE}"); subcontrol-position: right; width: 12px; height: 12px;
+                         margin-left: 6px; border-radius: 3px; }}
+QTabBar::close-button:hover {{ image: url("{CLOSE_HOVER}"); background: #c62828; }}
+QMenu {{ background: #1b2030; border: 1px solid {BORDER}; padding: 4px; }}
+QMenu::item {{ padding: 6px 22px 6px 14px; border-radius: 4px; }}
+QMenu::item:selected {{ background: #24304a; }}
+QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 6px; }}
 
 QPushButton {{
     background: #1f2533; border: 1px solid {BORDER}; border-radius: 6px; padding: 7px 14px;
@@ -145,10 +164,25 @@ def _arrow_images() -> dict:
         img.save(path)
         return path.replace("\\", "/")
 
+    def cross(name, color):
+        img = QImage(24, 24, QImage.Format_ARGB32)
+        img.fill(Qt.transparent)
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor(color), 2.4, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(7, 7), QPointF(17, 17))
+        p.drawLine(QPointF(17, 7), QPointF(7, 17))
+        p.end()
+        path = os.path.join(out, name)
+        img.save(path)
+        return path.replace("\\", "/")
+
     return {
         "DOWN": tri("down.png", [(0, 0), (10, 0), (5, 6)], 10, 6, MUTED),
         "UP": tri("up.png", [(0, 6), (10, 6), (5, 0)], 10, 6, MUTED),
         "CHECK": check("check.png"),
+        "CLOSE": cross("close.png", MUTED),
+        "CLOSE_HOVER": cross("close_hover.png", "#ffffff"),
     }
 
 
