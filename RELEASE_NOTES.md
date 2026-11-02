@@ -8,6 +8,31 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### Changes in v0.5.0-beta.1: several pages at once, multi-select waypoints
+
+Beta: the new layout was tested on Linux and in CI on Windows, not yet
+with the real robot. Nothing changed on the robot side; the v0.4.0 robot
+setup works as is.
+
+- **See several pages at once.** A sidebar click still shows the page in
+  place of the one you are using. **Ctrl+click** opens it to the right;
+  **right-click** a sidebar entry or a tab to open it as a tab, beside,
+  below or in **its own window** (e.g. on a second monitor), to move it
+  back, or to close it. Drag the bar between pages to resize them.
+- **▦ Layout** menu (above E-STOP): *Drive* (Teleop + 2D Map), *Mapping*
+  (2D Map + 3D Map), *Monitor* (2D Map + Camera + Status), *Missions*
+  (Missions + Camera), *Single page*.
+- The layout, page windows included, comes back the next time you start
+  the app.
+- Pages you cannot see are not drawn, and the camera and 3D map only
+  receive data while their page is on screen, as before.
+- The 3D Map can be split and tabbed but not yet opened in its own window.
+- **Missions: select several waypoints** with Ctrl/Shift-click or by
+  dragging (they get a blue ring on the map), then move them with ↑/↓,
+  delete them with **Remove** or the **Delete** key, or set their
+  tolerance and dwell with **Apply to selected**. **Clear all** empties a
+  mission. Reordering and removing are disabled while a mission runs.
+
 ### Changes in v0.4.0: 3D map, goal arrows, no more freezes
 
 - **No more "Not Responding" on Windows.** Connecting (and every automatic
