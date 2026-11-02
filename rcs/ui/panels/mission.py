@@ -5,11 +5,12 @@ import math
 import time
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QItemSelectionModel, Qt, QTimer, Signal
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout, QHeaderView,
-    QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton, QTableWidget,
-    QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout,
+    QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ...core.mission import Mission, MissionStore, Waypoint
@@ -78,25 +79,39 @@ class MissionPanel(QWidget):
         mv.addWidget(self.loop_ck)
         side.addWidget(mbox)
 
-        wbox = QGroupBox("Waypoints — drag on the map to add one with a heading, or 'Set here'")
+        wbox = QGroupBox("Waypoints — Ctrl/Shift-click to select several")
         wv = QVBoxLayout(wbox)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["#", "Name", "x (m)", "y (m)", "yaw°"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.verticalHeader().setVisible(False)
+        # Ctrl/Shift-click or drag to select several rows
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.itemChanged.connect(self._on_table_edit)
+        self.table.itemSelectionChanged.connect(self._on_selection)
+        # Delete only while the table (not a cell editor) has focus
+        dk = QShortcut(QKeySequence.Delete, self.table, self._remove)
+        dk.setContext(Qt.WidgetShortcut)
         wv.addWidget(self.table)
         row2 = QHBoxLayout()
         here = QPushButton("Set here"); here.clicked.connect(self._add_here)
         up = QPushButton("↑"); up.clicked.connect(lambda: self._move(-1))
         down = QPushButton("↓"); down.clicked.connect(lambda: self._move(1))
-        rm = QPushButton("Remove"); rm.clicked.connect(self._remove)
-        for b in (here, up, down, rm):
+        rm = QPushButton("Remove"); rm.setToolTip("Remove the selected waypoints (Delete)")
+        rm.clicked.connect(self._remove)
+        clr = QPushButton("Clear all"); clr.clicked.connect(self._clear_all)
+        for b in (here, up, down):
             row2.addWidget(b)
         wv.addLayout(row2)
+        row3 = QHBoxLayout()
+        self.sel_lbl = QLabel(""); self.sel_lbl.setProperty("muted", True)
+        row3.addWidget(self.sel_lbl, 1)
+        row3.addWidget(rm); row3.addWidget(clr)
+        wv.addLayout(row3)
         side.addWidget(wbox)
 
-        tolbox = QGroupBox("Default per-waypoint settings (new waypoints)")
+        tolbox = QGroupBox("Waypoint settings")
         tv = QVBoxLayout(tolbox)
         r = QHBoxLayout()
         self.tol_sb = QDoubleSpinBox(); self.tol_sb.setRange(0.05, 5.0); self.tol_sb.setValue(0.25); self.tol_sb.setSuffix(" m")
@@ -104,6 +119,11 @@ class MissionPanel(QWidget):
         r.addWidget(QLabel("Tolerance:")); r.addWidget(self.tol_sb)
         r.addWidget(QLabel("Dwell:")); r.addWidget(self.dwell_sb)
         tv.addLayout(r)
+        self.apply_btn = QPushButton("Apply to selected")
+        self.apply_btn.setToolTip("New waypoints use these values; this button also sets them on the selected rows")
+        self.apply_btn.clicked.connect(self._apply_to_selected)
+        self.apply_btn.setEnabled(False)
+        tv.addWidget(self.apply_btn)
         side.addWidget(tolbox)
 
         ebox = QGroupBox("Execute")
@@ -163,12 +183,17 @@ class MissionPanel(QWidget):
                 self.table.setItem(i, 2, QTableWidgetItem(f"{wp.x:.3f}"))
                 self.table.setItem(i, 3, QTableWidgetItem(f"{wp.y:.3f}"))
                 self.table.setItem(i, 4, QTableWidgetItem(f"{math.degrees(wp.yaw):.1f}"))
+                tip = f"tolerance {wp.tolerance:.2f} m · dwell {wp.dwell:.1f} s"
+                for c in range(5):
+                    self.table.item(i, c).setToolTip(tip)
         self.table.blockSignals(False)
+        self._on_selection()
 
     def _emit_wps(self) -> None:
         pts = ([(w.x, w.y, f"{i + 1}  {w.name}", w.yaw) for i, w in enumerate(self.cur.waypoints)]
                if self.cur else [])
         self.view.set_waypoints(pts)
+        self.view.set_waypoint_selection(self.selected_rows())
         self.waypoints_changed.emit(pts)
 
     def _save(self) -> None:
@@ -266,28 +291,77 @@ class MissionPanel(QWidget):
             return
         self._save(); self._emit_wps()
 
+    def selected_rows(self) -> list:
+        return sorted({i.row() for i in self.table.selectionModel().selectedRows()})
+
+    def select_rows(self, rows) -> None:
+        self.table.clearSelection()
+        sm, model = self.table.selectionModel(), self.table.model()
+        for r in rows:
+            sm.select(model.index(r, 0), QItemSelectionModel.Select | QItemSelectionModel.Rows)
+        if rows:
+            self.table.setCurrentCell(rows[0], 1, QItemSelectionModel.NoUpdate)
+
+    def _on_selection(self) -> None:
+        rows = self.selected_rows()
+        self.view.set_waypoint_selection(rows)
+        self.apply_btn.setEnabled(bool(rows))
+        self.sel_lbl.setText(f"{len(rows)} selected" if len(rows) > 1 else "")
+
+    def _blocked_while_running(self) -> bool:
+        """Reordering or removing waypoints under a running or paused mission
+        would make the executor drive to the wrong one."""
+        if self._exec_idx >= 0:
+            self.status_lbl.setText("stop the mission before reordering or removing waypoints")
+            return True
+        return False
+
     def _move(self, delta: int) -> None:
-        if not self.cur:
+        if not self.cur or self._blocked_while_running():
             return
-        r = self.table.currentRow()
-        if r < 0:
+        rows = self.selected_rows()
+        n = len(self.cur.waypoints)
+        if not rows or (delta < 0 and rows[0] == 0) or (delta > 0 and rows[-1] == n - 1):
             return
-        nr = r + delta
-        if nr < 0 or nr >= len(self.cur.waypoints):
-            return
-        self.cur.waypoints[r], self.cur.waypoints[nr] = self.cur.waypoints[nr], self.cur.waypoints[r]
-        self._save(); self._refresh_table()
-        self.table.setCurrentCell(nr, 0)
-        self._emit_wps()
+        wps = self.cur.waypoints
+        for r in (rows if delta < 0 else reversed(rows)):
+            wps[r], wps[r + delta] = wps[r + delta], wps[r]
+        self._save(); self._refresh_table(); self._emit_wps()
+        self.select_rows([r + delta for r in rows])
 
     def _remove(self) -> None:
+        if not self.cur or self._blocked_while_running():
+            return
+        rows = self.selected_rows()
+        if not rows:
+            return
+        for r in reversed(rows):
+            del self.cur.waypoints[r]
+        self._save(); self._refresh_table(); self._emit_wps()
+        if self.cur.waypoints:      # keep a selection so Delete can be pressed again
+            self.select_rows([min(rows[0], len(self.cur.waypoints) - 1)])
+
+    def _clear_all(self) -> None:
+        if not self.cur or not self.cur.waypoints or self._blocked_while_running():
+            return
+        if QMessageBox.question(self, "Clear all",
+                                f"Remove all {len(self.cur.waypoints)} waypoints of '{self.cur.name}'?") \
+                != QMessageBox.Yes:
+            return
+        self.cur.waypoints.clear()
+        self._save(); self._refresh_table(); self._emit_wps()
+
+    def _apply_to_selected(self) -> None:
         if not self.cur:
             return
-        r = self.table.currentRow()
-        if r < 0:
-            return
-        del self.cur.waypoints[r]
-        self._save(); self._refresh_table(); self._emit_wps()
+        rows = self.selected_rows()
+        for r in rows:
+            self.cur.waypoints[r].tolerance = self.tol_sb.value()
+            self.cur.waypoints[r].dwell = self.dwell_sb.value()
+        self._save(); self._refresh_table()
+        self.select_rows(rows)
+        self.status_lbl.setText(f"tolerance {self.tol_sb.value():.2f} m, dwell {self.dwell_sb.value():.1f} s "
+                                f"applied to {len(rows)} waypoint(s)")
 
     # ---- robot pose feed-in (so "Set here" works) ----
 

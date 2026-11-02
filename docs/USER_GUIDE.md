@@ -342,9 +342,14 @@ each in turn.
      direction sets the heading the robot will have there, or
    - drive the robot somewhere and click **Set here** to add its current
      position and heading.
-3. Edit **Name**, **x**, **y** and **yaw°** directly in the table. Reorder
-   with **↑ / ↓**, delete with **Remove**.
-4. **Default per-waypoint settings** apply to waypoints you add next:
+3. Edit **Name**, **x**, **y** and **yaw°** directly in the table.
+   Select several rows with **Ctrl**-click, **Shift**-click or by dragging;
+   the selected waypoints get a blue ring on the map. **↑ / ↓** move the
+   selected rows, **Remove** (or the **Delete** key) deletes them, and
+   **Clear all** empties the mission after asking. Reordering and removing
+   are disabled while a mission is running or paused: stop it first.
+4. **Waypoint settings** apply to waypoints you add next, and **Apply to
+   selected** sets them on the selected rows (hover a row to see its values):
    - **Tolerance:** how close counts as "arrived" (default 0.25 m).
    - **Dwell:** how long to wait at the waypoint before moving on.
 5. Tick **Loop route** to start again from the first waypoint after the last

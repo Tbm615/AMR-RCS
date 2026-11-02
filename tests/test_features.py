@@ -387,6 +387,73 @@ def test_mission_executor(tmp_path: Path) -> None:
           panel.status_lbl.text())
 
 
+# ---- 5b. Waypoint table: multi-select, remove, move, bulk settings ----
+
+def test_mission_multiselect(tmp_path: Path) -> None:
+    print("\n[Mission waypoint multi-select]")
+    from PySide6.QtWidgets import QMessageBox
+    store = MissionStore(tmp_path / "missions_sel.json")
+    m = Mission.new("sel")
+    m.waypoints = [Waypoint.new(n, float(i), 0.0) for i, n in enumerate("ABCDEF")]
+    store.upsert(m)
+    panel = MissionPanel(store)
+    panel._set_combo_to(m.id)
+    names = lambda: "".join(w.name for w in panel.cur.waypoints)   # noqa: E731
+
+    panel.select_rows([1, 3, 4])
+    check("three rows selected", panel.selected_rows() == [1, 3, 4], f"{panel.selected_rows()}")
+    check("selection ringed on the map", len(panel.view.wp_sel.getData()[0]) == 3)
+    check("selection count shown", panel.sel_lbl.text() == "3 selected", panel.sel_lbl.text())
+
+    panel._move(-1)
+    check("move up keeps the block together", names() == "BADECF", names())
+    check("moved rows stay selected", panel.selected_rows() == [0, 2, 3], f"{panel.selected_rows()}")
+    panel._move(-1)
+    check("move up stops at the top", names() == "BADECF", names())
+    panel._move(1)
+    check("move down restores the order", names() == "ABCDEF", names())
+
+    panel.select_rows([0, 2])
+    panel.tol_sb.setValue(0.6); panel.dwell_sb.setValue(4.0)
+    panel._apply_to_selected()
+    w = panel.cur.waypoints
+    check("apply to selected sets tolerance/dwell",
+          w[0].tolerance == 0.6 and w[2].dwell == 4.0 and w[1].tolerance != 0.6,
+          f"{[(x.tolerance, x.dwell) for x in w]}")
+
+    before = names()
+    panel.select_rows([0, 2, 5])
+    panel._remove()
+    exp = "".join(c for i, c in enumerate(before) if i not in (0, 2, 5))
+    check("remove deletes every selected waypoint", names() == exp, f"{before} -> {names()}")
+    check("saved to the store", len(store.get(m.id).waypoints) == 3)
+
+    # Delete key on the table
+    panel.table.setFocus()
+    panel.select_rows([0])
+    from PySide6.QtTest import QTest
+    panel.show(); _app.processEvents()
+    panel.table.setFocus(); _app.processEvents()
+    QTest.keyClick(panel.table, Qt.Key_Delete)
+    check("Delete key removes the selection", len(panel.cur.waypoints) == 2, names())
+
+    # no edits under a running mission
+    panel._exec_idx = 0
+    panel.select_rows([0])
+    panel._remove()
+    check("remove blocked while a mission runs", len(panel.cur.waypoints) == 2)
+    panel._exec_idx = -1
+
+    orig = QMessageBox.question
+    QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.Yes)
+    try:
+        panel._clear_all()
+    finally:
+        QMessageBox.question = orig
+    check("clear all empties the mission", panel.cur.waypoints == [] and panel.table.rowCount() == 0)
+    panel.close()
+
+
 # ---- main ----
 
 def main() -> int:
@@ -398,6 +465,7 @@ def main() -> int:
         test_camera()
         test_tf()
         test_mission_executor(Path(td))
+        test_mission_multiselect(Path(td))
     print(f"\n--- {PASS} passed, {FAIL} failed ---")
     return 0 if FAIL == 0 else 1
 

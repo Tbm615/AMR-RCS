@@ -151,6 +151,12 @@ class MapView(pg.PlotWidget):
             size=12, pen=pg.mkPen("#ffb547", width=2), brush=pg.mkBrush("#ffb547"))
         self.wp_scatter.setZValue(11)
         self.addItem(self.wp_scatter)
+        # ring around the waypoints selected in the mission table
+        self.wp_sel = pg.ScatterPlotItem(
+            size=22, pen=pg.mkPen("#4fd1ff", width=2.5), brush=pg.mkBrush(0, 0, 0, 0))
+        self.wp_sel.setZValue(11.5)
+        self.addItem(self.wp_sel)
+        self._wp_xy: list = []
 
         self.robot_body = pg.PlotDataItem(
             pen=pg.mkPen("#5a9df6", width=2), fillLevel=None)
@@ -295,6 +301,8 @@ class MapView(pg.PlotWidget):
         for a in self.wp_arrows:
             self.removeItem(a)
         self.wp_arrows = []
+        self._wp_xy = [(float(p[0]), float(p[1])) for p in pts]
+        self.wp_sel.setData([], [])
         if not pts:
             self.wp_scatter.setData([], [])
             return
@@ -318,8 +326,14 @@ class MapView(pg.PlotWidget):
             self.addItem(t)
             self._wp_labels.append(t)
 
+    def set_waypoint_selection(self, indices) -> None:
+        """Ring the waypoints at these indices (from the last set_waypoints)."""
+        sel = [self._wp_xy[i] for i in indices if 0 <= i < len(self._wp_xy)]
+        self.wp_sel.setData([p[0] for p in sel], [p[1] for p in sel])
+
     def show_waypoints(self, on: bool) -> None:
         self.wp_scatter.setVisible(on)
+        self.wp_sel.setVisible(on)
         for a in self.wp_arrows:
             a.setVisible(on)
         for t in getattr(self, "_wp_labels", []):
