@@ -6,10 +6,10 @@ import sys
 import time
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QIcon
+from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu,
-    QPushButton, QStatusBar, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
+    QMessageBox, QPushButton, QStatusBar, QVBoxLayout, QWidget,
 )
 
 from .. import APP_NAME, __version__
@@ -18,6 +18,7 @@ from ..core.events import EventLog
 from ..core.mission import MissionStore
 from ..core.profile import ProfileStore, RobotProfile, load_settings, save_settings
 from ..core.ros_client import RosClient, quat_to_yaw
+from ..core.sound import Sounds
 from .panels.camera import CameraPanel
 from .panels.connection import ConnectionPanel
 from .panels.events import EventsPanel
@@ -73,6 +74,9 @@ class MainWindow(QMainWindow):
         self.profiles = ProfileStore()
         self.missions = MissionStore()
         self.events = EventLog()
+        self.settings = load_settings()
+        self.sounds = Sounds()
+        self.sounds.enabled = bool(self.settings.get("sound", True))
         self.ros = RosClient(profile=self.profiles.active())
         self.tf = self.ros.tf            # filled on the network thread
 
@@ -139,9 +143,9 @@ class MainWindow(QMainWindow):
         self.nav_group.setExclusive(True)
 
         self.btns = {}
-        for key, label in PAGES:
+        for i, (key, label) in enumerate(PAGES):
             b = _NavButton(label)
-            b.setToolTip("Click: show here · Ctrl+click: open beside · right-click: more")
+            b.setToolTip(f"F{i + 1} · Click: show here · Ctrl+click: open beside · right-click: more")
             b.setContextMenuPolicy(Qt.CustomContextMenu)
             b.customContextMenuRequested.connect(lambda _p, k=key: self._page_menu(k))
             self.nav_group.addButton(b)
@@ -152,10 +156,10 @@ class MainWindow(QMainWindow):
         self.layout_btn = QPushButton("▦  Layout")
         self.layout_btn.setObjectName("NavButton")
         self.layout_btn.setToolTip("Show several pages at once")
-        lm = QMenu(self.layout_btn)
-        for name, label in PRESETS:
-            lm.addAction(label, lambda n=name: self.apply_layout(n))
-        self.layout_btn.setMenu(lm)
+        self.layout_menu = QMenu(self.layout_btn)
+        self.layout_menu.aboutToShow.connect(self._fill_layout_menu)
+        self._fill_layout_menu()
+        self.layout_btn.setMenu(self.layout_menu)
         sv.addWidget(self.layout_btn)
 
         est_frame = QFrame()
@@ -212,9 +216,14 @@ class MainWindow(QMainWindow):
         for key, btn in self.btns.items():
             btn.clicked.connect(lambda _c=False, k=key, b=btn: self._show(
                 k, "right" if b.take_mods() & Qt.ControlModifier else "replace"))
-        saved = load_settings().get("layout")
+        saved = self.settings.get("layout")
         if not (saved and self.workspace.restore_layout(saved)):
             self.workspace.apply_preset("single", "conn")
+        self.p_events.sound_ck.setChecked(self.sounds.enabled)
+        self.p_events.sound_ck.toggled.connect(self._set_sound)
+        self.p_conn.auto_ck.setChecked(bool(self.settings.get("auto_connect", False)))
+        self.p_conn.auto_ck.toggled.connect(lambda on: save_settings({"auto_connect": on}))
+        self._shortcuts()
 
         # status bar
         sb = QStatusBar()
@@ -246,6 +255,78 @@ class MainWindow(QMainWindow):
     def apply_layout(self, name: str) -> None:
         self.workspace.apply_preset(name, self.workspace.active or "conn")
         self._on_visible_changed()
+
+    # ---- layouts ----
+
+    def _fill_layout_menu(self) -> None:
+        m = self.layout_menu
+        m.clear()
+        for i, (name, label) in enumerate(PRESETS):
+            m.addAction(f"{label}\tCtrl+{i + 1}", lambda n=name: self.apply_layout(n))
+        mine = self.settings.get("layouts", {})
+        if mine:
+            m.addSeparator()
+            for name in sorted(mine):
+                m.addAction(name, lambda n=name: self.load_layout(n))
+        m.addSeparator()
+        m.addAction("Save this layout…", self._ask_save_layout)
+        if mine:
+            d = m.addMenu("Delete a layout")
+            for name in sorted(mine):
+                d.addAction(name, lambda n=name: self.delete_layout(n))
+
+    def _ask_save_layout(self) -> None:
+        name, ok = QInputDialog.getText(self, "Save layout", "Name:")
+        if ok and name.strip():
+            self.save_layout_as(name.strip())
+
+    def save_layout_as(self, name: str) -> None:
+        self.settings.setdefault("layouts", {})[name] = self.workspace.save_layout()
+        save_settings({"layouts": self.settings["layouts"]})
+
+    def load_layout(self, name: str) -> None:
+        data = self.settings.get("layouts", {}).get(name)
+        if data and self.workspace.restore_layout(data):
+            self._on_visible_changed()
+
+    def delete_layout(self, name: str) -> None:
+        self.settings.get("layouts", {}).pop(name, None)
+        save_settings({"layouts": self.settings.get("layouts", {})})
+
+    # ---- keyboard ----
+
+    def _shortcuts(self) -> None:
+        def key(seq, fn, context=Qt.WindowShortcut):
+            QShortcut(QKeySequence(seq), self, fn, context=context)
+
+        for i, (page, _label) in enumerate(PAGES):
+            key(f"F{i + 1}", lambda k=page: self._show(k))
+        for i, (name, _label) in enumerate(PRESETS):
+            key(f"Ctrl+{i + 1}", lambda n=name: self.apply_layout(n))
+        # F12 only engages, from any window of the app: a stuck key or a second
+        # press must never release the E-STOP
+        key("F12", lambda: self._set_estop(True), Qt.ApplicationShortcut)
+        key("Esc", self.on_escape)
+
+    def on_escape(self) -> None:
+        """Esc: drop what the mouse is doing on a map, else stop the current goal."""
+        for v in (self.p_map.view, self.p_nav.view, self.p_mission.view):
+            if v._anchor is not None or v.ruler_m is not None:
+                v.cancel_aim()
+                v.clear_ruler()
+                return
+        if self.p_mission._exec_running:
+            self.p_mission._pause()
+        elif self._nav_state in ("active", "pending"):
+            self.ros.cancel_nav_goal()
+
+    def _set_sound(self, on: bool) -> None:
+        self.sounds.enabled = on
+        save_settings({"sound": on})
+
+    def connect_on_start(self) -> None:
+        if self.settings.get("auto_connect") and self.profiles.active():
+            self._on_connect(self.profiles.active())
 
     def _page_menu(self, key: str) -> None:
         self.workspace.page_menu(key).exec(self.btns[key].mapToGlobal(self.btns[key].rect().topRight()))
@@ -358,6 +439,7 @@ class MainWindow(QMainWindow):
         self.p_mission._emit_wps()      # the open mission was loaded before these connections
 
     def _on_connect(self, profile: RobotProfile) -> None:
+        self.profiles.set_active(profile.id)
         self.ros.set_profile(profile)
         self.ros.connect_robot()
         self.sb_robot.setText(f"{profile.name} ({profile.ws_url})")
@@ -410,8 +492,11 @@ class MainWindow(QMainWindow):
     def _log(self, level: str, source: str, text: str) -> None:
         self.events.add(level, source, text)
         self.statusBar().showMessage(f"{source}: {text}", 6000)
-        if level != "info" and "events" not in self._visible:
-            self._set_unseen(self._unseen + 1)
+        if level != "info":
+            if QApplication.platformName() != "offscreen":
+                self.sounds.play("alarm" if level == "error" else "warn")
+            if "events" not in self._visible:
+                self._set_unseen(self._unseen + 1)
 
     _unseen = 0
 

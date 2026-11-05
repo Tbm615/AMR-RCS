@@ -153,6 +153,9 @@ reconnecting every 2 seconds until you click **Disconnect**.
 
 ---
 
+Tick **Connect to the last robot when the app starts** on the Connection page
+to skip this step next time.
+
 ## 5. The main window
 
 - **Sidebar (left):** pages: Connection, Robot programs, Status, Teleop, 2D Map,
@@ -172,7 +175,8 @@ one you are using, as before. To see more than one page:
 - **▦ Layout** (above E-STOP) sets up the usual combinations in one click:
   *Drive* (Teleop + 2D Map), *Mapping* (2D Map + 3D Map), *Monitor*
   (2D Map + Camera + Status), *Missions* (Missions + Camera), or back to
-  *Single page*.
+  *Single page*. **Save this layout…** keeps the current arrangement under a
+  name of your own, listed in the same menu.
 - Drag the bar between two pages to resize them; drag a tab to reorder it;
   the **×** on a tab closes that page. Closing a page window closes its
   pages. Pages that are open are shown brighter in the sidebar; the one you
@@ -184,6 +188,15 @@ one you are using, as before. To see more than one page:
 Pages you cannot see (closed, or behind another tab) are not drawn, and the
 camera and 3D map only receive data while their page is on screen, so extra
 pages cost Wi-Fi only while you look at them.
+
+**Keyboard.**
+
+| Key | Action |
+|---|---|
+| **F1** … **F11** | open the pages, in the order of the sidebar |
+| **Ctrl+1** … **Ctrl+5** | the preset layouts |
+| **F12** | engage E-STOP, from any window of the app. It never releases it: click the button for that |
+| **Esc** | clear what the mouse is doing on a map (arrow, ruler), otherwise pause the mission or cancel the goal |
 
 All map views share the same controls:
 
@@ -484,7 +497,8 @@ lidar that stopped arriving. Errors are red and warnings amber, the newest on
 top. Filter by level or source; **Export CSV…** saves what is shown, for
 looking at a run later.
 
-The sidebar counts new warnings and errors (**Events (2)**) until you open the
+With **Sound alerts** on (the default), the PC plays a sound on errors and
+warnings. The sidebar counts new warnings and errors (**Events (2)**) until you open the
 page, and the newest event also shows for a few seconds at the bottom left.
 The last 2000 events are kept in `events.csv` next to your settings, so they
 are still there after a restart.

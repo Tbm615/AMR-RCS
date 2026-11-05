@@ -107,6 +107,8 @@ class ConnectionPanel(QWidget):
         row.addWidget(self.connect_btn)
         row.addWidget(self.disc_btn)
         right.addLayout(row)
+        self.auto_ck = QCheckBox("Connect to the last robot when the app starts")
+        right.addWidget(self.auto_ck)
 
         self.status_lbl = QLabel("not connected")
         self.status_lbl.setProperty("muted", True)

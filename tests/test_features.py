@@ -575,6 +575,30 @@ def test_clearance() -> None:
           and t.bar_front.text() == "no lidar")
 
 
+# ---- 4b2. Alert sounds ----
+
+def test_sounds(tmp_path: Path) -> None:
+    print("\n[Sounds]")
+    import wave
+    from rcs.core import sound
+    for name in sound.TONES:
+        with wave.open(sound._wav_path(name)) as w:
+            check(f"{name} tone is a real WAV", w.getnframes() > 1000 and w.getframerate() == sound.RATE)
+    s = sound.Sounds()
+    played = []
+    s._player, real = "fake", sound.subprocess.Popen
+    sound.subprocess.Popen = lambda cmd, **k: played.append(cmd)
+    real_platform, sound.sys.platform = sound.sys.platform, "linux"
+    try:
+        check("first alert plays", s.play("warn") and len(played) == 1)
+        check("a burst makes one sound", not s.play("alarm") and len(played) == 1)
+        s._last = 0.0
+        s.enabled = False
+        check("off means silent", not s.play("alarm") and len(played) == 1)
+    finally:
+        sound.subprocess.Popen, sound.sys.platform = real, real_platform
+
+
 # ---- 4c. Map preview made on the robot ----
 
 def test_map_preview(tmp_path: Path) -> None:
@@ -692,6 +716,7 @@ def main() -> int:
         test_camera()
         test_tf()
         test_clearance()
+        test_sounds(Path(td))
         test_map_preview(Path(td))
         test_mission_executor(Path(td))
         test_mission_multiselect(Path(td))

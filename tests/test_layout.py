@@ -211,6 +211,67 @@ def main() -> int:
     log2 = EventLog()
     check("events survive a restart", [e.text for e in log2.events] == texts())
 
+    print("\n[keyboard]")
+    w.apply_layout("single"); pump()
+    w.activateWindow()
+    QTest.qWaitForWindowActive(w, 2000)
+    QTest.keyClick(w, Qt.Key_F5); pump()
+    check("F5 opens the 5th page", w.active_page() == "map", w.active_page())
+    QTest.keyClick(w, Qt.Key_F11); pump()
+    check("F11 opens Events", w.active_page() == "events", w.active_page())
+    QTest.keyClick(w, Qt.Key_2, Qt.ControlModifier); pump()
+    check("Ctrl+2 = Drive", vis() == {"teleop", "map"}, f"{vis()}")
+    QTest.keyClick(w, Qt.Key_F12); pump()
+    check("F12 engages E-STOP", w._estop_on)
+    QTest.keyClick(w, Qt.Key_F12); pump()
+    check("a second F12 does not release it", w._estop_on)
+    w._set_estop(False)
+    w.p_map.view.set_click_mode("measure")
+    w.p_map.view.ruler_m = 1.0
+    calls = []
+    real_cancel = w.ros.cancel_nav_goal
+    w.ros.cancel_nav_goal = lambda: calls.append(1)
+    w._nav_state = "active"
+    w.on_escape()
+    check("Esc clears the ruler first", w.p_map.view.ruler_m is None and not calls)
+    w.on_escape()
+    check("then Esc cancels the goal", calls == [1])
+    w._nav_state = "idle"
+    w.on_escape()
+    check("no goal: Esc does nothing", calls == [1])
+    w.ros.cancel_nav_goal = real_cancel
+    w.p_map.view.set_click_mode("goal")
+
+    print("\n[saved layouts]")
+    w.apply_layout("mapping"); pump()
+    w._show("logs", "below"); pump()
+    w.save_layout_as("my setup")
+    w.apply_layout("single"); pump()
+    w._fill_layout_menu()
+    check("listed in the Layout menu", any(a.text() == "my setup" for a in w.layout_menu.actions()))
+    w.load_layout("my setup"); pump()
+    check("brings the pages back", vis() == {"map", "3d", "logs"}, f"{vis()}")
+    check("kept in the settings", "my setup" in load_settings().get("layouts", {}))
+    w.delete_layout("my setup")
+    w._fill_layout_menu()
+    check("can be deleted", not any(a.text() == "my setup" for a in w.layout_menu.actions())
+          and "my setup" not in load_settings().get("layouts", {}))
+
+    print("\n[start-up options]")
+    w.p_conn.auto_ck.setChecked(True)
+    check("auto-connect saved", load_settings().get("auto_connect") is True)
+    w.p_events.sound_ck.setChecked(False)
+    check("sound off saved", load_settings().get("sound") is False and not w.sounds.enabled)
+    w.p_events.sound_ck.setChecked(True)
+    done = []
+    w._on_connect, keep = (lambda p: done.append(p)), w._on_connect
+    w.settings["auto_connect"] = True
+    w.connect_on_start()
+    w._on_connect = keep
+    check("connects the active robot on start", len(done) == 1 and done[0].id == w.profiles.active().id)
+    w.p_conn.auto_ck.setChecked(False)
+    w.settings["auto_connect"] = False
+
     print("\n[layout is kept]")
     w.apply_layout("monitor"); pump()
     w._show("logs", "float"); pump()

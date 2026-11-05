@@ -107,6 +107,8 @@ def main() -> int:
         prof = win.profiles.active()
         if prof:
             QTimer.singleShot(200, lambda p=prof: win._on_connect(p))
+    else:
+        QTimer.singleShot(200, win.connect_on_start)
 
     return app.exec()
 

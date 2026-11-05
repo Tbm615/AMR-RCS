@@ -6,7 +6,7 @@ from typing import List
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
+    QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
     QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -42,6 +42,9 @@ class EventsPanel(QWidget):
         self.count = QLabel("")
         self.count.setProperty("muted", True)
         bar.addWidget(self.count, 1)
+        self.sound_ck = QCheckBox("Sound alerts")
+        self.sound_ck.setToolTip("A sound on errors and warnings, from the PC's speakers")
+        bar.addWidget(self.sound_ck)
         bar.addWidget(export)
         bar.addWidget(clear)
         v.addLayout(bar)
