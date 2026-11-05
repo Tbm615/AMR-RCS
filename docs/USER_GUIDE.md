@@ -19,7 +19,7 @@ through `rosbridge_server`, which runs on the robot.
 - [9. Map, localization and goals (2D Map)](#9-map-localization-and-goals-2d-map)
 - [10. Navigation page](#10-navigation-page)
 - [11. Missions, checkpoints and loop routes](#11-missions-checkpoints-and-loop-routes)
-- [12. Status, Camera, 3D Map and Logs](#12-status-camera-3d-map-and-logs)
+- [12. Status, Camera, 3D Map, Logs and Events](#12-status-camera-3d-map-logs-and-events)
 - [13. Several robots](#13-several-robots)
 - [14. Settings files and advanced options](#14-settings-files-and-advanced-options)
 - [15. Troubleshooting](#15-troubleshooting)
@@ -403,7 +403,7 @@ waypoint up to 3 times, then stops the mission and says why.
 
 ---
 
-## 12. Status, Camera, 3D Map and Logs
+## 12. Status, Camera, 3D Map, Logs and Events
 
 ![Status page](screenshots/status.png)
 
@@ -464,6 +464,22 @@ is built in the app while you drive (Teleop or goals):
   and drag toward the heading, like on the 2D Map (right-click cancels).
 
 The page needs OpenGL; on PCs without it the page shows a notice.
+
+---
+
+### Events
+
+What happened and when: connection lost and back, E-STOP, goals sent, reached
+or aborted, missions (started, each arrival, retries, stopped, complete),
+robot programs started, stopped or failed with the reason, and odometry or
+lidar that stopped arriving. Errors are red and warnings amber, the newest on
+top. Filter by level or source; **Export CSV…** saves what is shown, for
+looking at a run later.
+
+The sidebar counts new warnings and errors (**Events (2)**) until you open the
+page, and the newest event also shows for a few seconds at the bottom left.
+The last 2000 events are kept in `events.csv` next to your settings, so they
+are still there after a restart.
 
 ---
 

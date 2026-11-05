@@ -21,6 +21,7 @@ class MissionPanel(QWidget):
     goal_requested = Signal(float, float, float)
     cancel_requested = Signal()
     waypoints_changed = Signal(object)   # list[(x,y)] for map overlay
+    event = Signal(str, str)             # level, text — for the Events page
 
     def __init__(self, store: MissionStore, parent=None):
         super().__init__(parent)
@@ -380,9 +381,12 @@ class MissionPanel(QWidget):
         if self._exec_idx < 0:
             self._exec_idx = 0
         self._exec_running = True
+        self.event.emit("info", f"'{self.cur.name}' started ({len(self.cur.waypoints)} waypoints)")
         self._dispatch_current()
 
     def _pause(self) -> None:
+        if self._exec_running and self.cur:
+            self.event.emit("info", f"'{self.cur.name}' paused")
         self._exec_running = False
         self.status_lbl.setText("paused")
         self.cancel_requested.emit()
@@ -392,6 +396,8 @@ class MissionPanel(QWidget):
             self._stop()
 
     def _stop(self) -> None:
+        if self._exec_idx >= 0 and self.cur:
+            self.event.emit("info", f"'{self.cur.name}' stopped")
         self._exec_running = False
         self._exec_idx = -1
         self.status_lbl.setText("stopped")
@@ -415,8 +421,10 @@ class MissionPanel(QWidget):
         if self._retries > self.MAX_RETRIES:
             self._stop()
             self.status_lbl.setText(f"stopped: Nav2 could not reach {wp.name} ({status})")
+            self.event.emit("error", f"Nav2 could not reach {wp.name} ({status}), mission stopped")
             return
         self.status_lbl.setText(f"{status} at {wp.name}, retry {self._retries}/{self.MAX_RETRIES}…")
+        self.event.emit("warn", f"{status} at {wp.name}, retry {self._retries}/{self.MAX_RETRIES}")
         QTimer.singleShot(2000, self._retry_current)
 
     def _retry_current(self) -> None:
@@ -454,6 +462,7 @@ class MissionPanel(QWidget):
             if self._exec_dwell_until == 0:
                 self._exec_dwell_until = time.monotonic() + wp.dwell
                 self.status_lbl.setText(f"arrived {wp.name} — dwell {wp.dwell:.1f} s")
+                self.event.emit("info", f"arrived at {wp.name}")
                 return
             if time.monotonic() < self._exec_dwell_until:
                 return
@@ -466,5 +475,6 @@ class MissionPanel(QWidget):
                     self._exec_running = False
                     self._exec_idx = -1
                     self.status_lbl.setText("mission complete")
+                    self.event.emit("info", f"'{self.cur.name}' complete")
                     return
             self._dispatch_current()

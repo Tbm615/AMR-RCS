@@ -14,11 +14,13 @@ from PySide6.QtWidgets import (
 
 from .. import APP_NAME, __version__
 from ..core.clearance import compute_clearance
+from ..core.events import EventLog
 from ..core.mission import MissionStore
 from ..core.profile import ProfileStore, RobotProfile, load_settings, save_settings
 from ..core.ros_client import RosClient, quat_to_yaw
 from .panels.camera import CameraPanel
 from .panels.connection import ConnectionPanel
+from .panels.events import EventsPanel
 from .panels.logs import LogsPanel
 from .panels.map2d import Map2DPanel
 from .panels.mission import MissionPanel
@@ -40,6 +42,7 @@ PAGES = [
     ("3d", "3D Map"),
     ("cam", "Camera"),
     ("logs", "Logs"),
+    ("events", "Events"),
 ]
 
 
@@ -69,6 +72,7 @@ class MainWindow(QMainWindow):
 
         self.profiles = ProfileStore()
         self.missions = MissionStore()
+        self.events = EventLog()
         self.ros = RosClient(profile=self.profiles.active())
         self.tf = self.ros.tf            # filled on the network thread
 
@@ -103,6 +107,11 @@ class MainWindow(QMainWindow):
         self._render_timer.setInterval(50)
         self._render_timer.timeout.connect(self._render)
         self._render_timer.start()
+        self._sensor_ok: dict = {}       # topic stat key -> was it arriving
+        self._sensor_timer = QTimer(self)
+        self._sensor_timer.setInterval(1000)
+        self._sensor_timer.timeout.connect(self._check_sensors)
+        self._sensor_timer.start()
 
     # ---- construct UI ----
 
@@ -179,6 +188,7 @@ class MainWindow(QMainWindow):
         self.p_3d = View3DPanel(self.ros.cloud_map)
         self.p_cam = CameraPanel()
         self.p_logs = LogsPanel()
+        self.p_events = EventsPanel(self.events)
 
         self._pages = {
             "conn": self.p_conn,
@@ -191,6 +201,7 @@ class MainWindow(QMainWindow):
             "3d": self.p_3d,
             "cam": self.p_cam,
             "logs": self.p_logs,
+            "events": self.p_events,
         }
         for key, label in PAGES:
             self.workspace.add_page(key, label, self._pages[key])
@@ -247,6 +258,8 @@ class MainWindow(QMainWindow):
         vis = self.workspace.visible_keys()
         newly = vis - self._visible
         self._visible = vis
+        if "events" in vis:
+            self._set_unseen(0)
         for k, b in self.btns.items():
             open_ = k in self.workspace.open_keys()
             if b.property("open") != open_:
@@ -314,6 +327,8 @@ class MainWindow(QMainWindow):
         self.ros.nav_status.connect(self._on_nav_state)
         self.ros.nav_status.connect(self.p_nav.set_status)
         self.ros.estop_received.connect(self._on_estop_remote)
+        self.ros.launcher_state.connect(self._on_launcher_events)
+        self.p_mission.event.connect(lambda level, text: self._log(level, "Mission", text))
 
         self.p_robot.open_page.connect(lambda k: self._show(k))
 
@@ -325,7 +340,7 @@ class MainWindow(QMainWindow):
         # map / nav / mission → ros
         self.p_map.goal_requested.connect(self._send_goal)
         self.p_map.cancel_requested.connect(self.ros.cancel_nav_goal)
-        self.p_map.set_initial_pose.connect(self.ros.publish_initial_pose)
+        self.p_map.set_initial_pose.connect(self._set_initial_pose)
         self.p_nav.goal_requested.connect(self._send_goal)
         self.p_nav.cancel_requested.connect(self.ros.cancel_nav_goal)
         self.p_mission.goal_requested.connect(self._send_goal)
@@ -338,7 +353,7 @@ class MainWindow(QMainWindow):
         self.p_mission.waypoints_changed.connect(self.p_3d.set_waypoints)
         # the 3D Map can set the same things as the 2D Map
         self.p_3d.goal_requested.connect(self._send_goal)
-        self.p_3d.pose_requested.connect(self.ros.publish_initial_pose)
+        self.p_3d.pose_requested.connect(self._set_initial_pose)
         self.p_3d.waypoint_requested.connect(self.p_mission.add_waypoint_at)
         self.p_mission._emit_wps()      # the open mission was loaded before these connections
 
@@ -364,18 +379,87 @@ class MainWindow(QMainWindow):
 
     def _on_ros_connected(self) -> None:
         self.sb_conn.setText("● connected"); self.sb_conn.setStyleSheet("color:#39d98a;")
+        self._linked = True
+        self._last_conn_error = None
+        self._log("info", "Connection", f"connected to {self.ros.profile.ws_url if self.ros.profile else 'robot'}")
         self.p_conn.set_connected(True, self.ros.profile.ws_url if self.ros.profile else "")
         self.p_status.set_connected(True)
         self.p_robot.set_connected(True)
 
     def _on_ros_disconnected(self) -> None:
         self.sb_conn.setText("● offline"); self.sb_conn.setStyleSheet("color:#ff6a6a;")
+        if getattr(self, "_linked", False):
+            self._linked = False
+            self._sensor_ok.clear()
+            if self.ros._want_connected:
+                self._log("warn", "Connection", "connection lost, reconnecting")
+            else:
+                self._log("info", "Connection", "disconnected")
         self.p_conn.set_connected(False)
         self.p_status.set_connected(False)
         self.p_robot.set_connected(False)
 
     def _on_ros_error(self, msg: str) -> None:
         self.p_conn.set_connected(False, msg)
+        if msg != getattr(self, "_last_conn_error", None):      # retried every few seconds
+            self._last_conn_error = msg
+            self._log("warn", "Connection", msg)
+
+    # ---- events ----
+
+    def _log(self, level: str, source: str, text: str) -> None:
+        self.events.add(level, source, text)
+        self.statusBar().showMessage(f"{source}: {text}", 6000)
+        if level != "info" and "events" not in self._visible:
+            self._set_unseen(self._unseen + 1)
+
+    _unseen = 0
+
+    def _set_unseen(self, n: int) -> None:
+        """Warnings and errors since the Events page was last on screen."""
+        self._unseen = n
+        self.btns["events"].setText(f"Events  ({n})" if n else "Events")
+
+    def _check_sensors(self) -> None:
+        """A sensor that was arriving and stopped is worth an event; one that
+        never arrived is not (bringup may simply not be running)."""
+        if not self.ros.is_connected():
+            return
+        for key, label in (("odom", "odometry"), ("scan", "lidar")):
+            st = self.ros.topic_stats.get(key)
+            if st is None:
+                continue
+            ok = st.fresh(3.0)
+            was = self._sensor_ok.get(key)
+            if was is not None and ok != was:
+                self._log("info" if ok else "warn", "Sensors",
+                          f"{label} is back" if ok else f"no {label} for 3 s")
+            self._sensor_ok[key] = ok
+
+    def _on_launcher_events(self, st: dict) -> None:
+        names = {"bringup": "Robot base", "nav": "Navigation"}
+        seen = self.__dict__.setdefault("_stack_state", {})
+        for key, label in names.items():
+            s = st.get("stacks", {}).get(key, {})
+            state = s.get("state")
+            prev = seen.get(key)
+            seen[key] = state
+            if prev is None or state == prev or state is None:
+                continue
+            if state == "failed":
+                self._log("error", "Robot", f"{label} failed: {s.get('detail') or 'see its log'}")
+            elif state in ("running", "stopped"):
+                self._log("info", "Robot", f"{label} {state}")
+        r = st.get("result") or {}
+        if r.get("id") and r["id"] != getattr(self, "_last_result", None):
+            first = getattr(self, "_last_result", None) is None
+            self._last_result = r["id"]
+            if not first and r.get("msg"):
+                self._log("info" if r.get("ok") else "warn", "Robot", str(r["msg"]))
+
+    def _set_initial_pose(self, x: float, y: float, yaw: float) -> None:
+        self._log("info", "Navigation", f"initial pose set at ({x:.2f}, {y:.2f})")
+        self.ros.publish_initial_pose(x, y, yaw)
 
     # ---- ros message handlers (on GUI thread via queued Qt signals) ----
 
@@ -482,6 +566,7 @@ class MainWindow(QMainWindow):
 
     def _send_goal(self, x: float, y: float, yaw: float) -> None:
         self._goal = (x, y, yaw)
+        self._log("info", "Navigation", f"goal sent to ({x:.2f}, {y:.2f})")
         for v in (self.p_map.view, self.p_nav.view, self.p_mission.view, self.p_3d):
             v.set_goal(x, y, yaw)
         self.ros.send_nav_goal(x, y, yaw)
@@ -519,6 +604,13 @@ class MainWindow(QMainWindow):
     # Distance/time remaining are computed here from /plan and the robot pose:
     # rosbridge (Humble) cannot subscribe to the NavigateToPose feedback topic.
     def _on_nav_state(self, state: str) -> None:
+        if state != self._nav_state:
+            ev = {"succeeded": ("info", "goal reached"), "canceled": ("info", "goal canceled"),
+                  "aborted": ("warn", "Nav2 aborted the goal"),
+                  "no_response": ("warn", "no response from Nav2")}.get(state)
+            # cancel_nav_goal reports "canceled" even with no goal running
+            if ev and (state != "canceled" or self._nav_state in ("active", "pending")):
+                self._log(ev[0], "Navigation", ev[1])
         self._nav_state = state
         if state in ("succeeded", "canceled", "aborted"):
             self._goal = None
@@ -562,6 +654,8 @@ class MainWindow(QMainWindow):
         self.sidebar_estop.setText("● E-STOP ON\nclick to release" if on else "● E-STOP")
         self.p_teleop.set_estop_state(on)
         self.p_status.set_estop(on)
+        self._log("error" if on else "info", "E-STOP",
+                  ("engaged" if on else "released") + ("" if publish else " by another console"))
         if on:
             self.sb_estop.setText("● estop: ENGAGED")
             self.sb_estop.setStyleSheet("color:#ff6a6a; font-weight:700;")

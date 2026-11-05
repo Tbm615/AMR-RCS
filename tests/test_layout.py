@@ -26,6 +26,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from rcs.core.events import EventLog, write_csv
 from rcs.core.profile import load_settings
 from rcs.ui import theme
 from rcs.ui.main_window import MainWindow
@@ -151,6 +152,64 @@ def main() -> int:
                          "data": [0, 0, 0, 100], "header": {"frame_id": "map"}})
     pump()
     check("local costmap reaches the 3D page", p3.lcost is not None)
+
+    print("\n[events]")
+    log, pe = w.events, w.p_events
+    log.clear()
+    texts = lambda: [e.text for e in log.events]            # noqa: E731
+    w.btns["map"].click(); pump()
+    w._set_estop(True)
+    check("E-STOP is an error event", log.events[-1].level == "error" and "engaged" in texts()[-1])
+    check("sidebar counts unseen problems", w.btns["events"].text() == "Events  (1)", w.btns["events"].text())
+    check("shown in the status bar", "E-STOP" in w.statusBar().currentMessage())
+    w._set_estop(False)
+    w._on_estop_remote(True)
+    check("remote E-STOP says so", "another console" in texts()[-1])
+    w._on_estop_remote(False)
+    w._nav_state = ""
+    w._on_nav_state("active")
+    w._on_nav_state("aborted"); w._on_nav_state("aborted")
+    check("Nav2 abort logged once", texts().count("Nav2 aborted the goal") == 1)
+    w._on_launcher_events({"stacks": {"bringup": {"state": "stopped"}}})
+    check("first launcher state is not an event", not any("Robot base" in t for t in texts()))
+    w._on_launcher_events({"stacks": {"bringup": {"state": "running"}}})
+    w._on_launcher_events({"stacks": {"bringup": {"state": "failed", "detail": "lidar not reachable"}}})
+    check("stack failure with its reason", log.events[-1].level == "error"
+          and "lidar not reachable" in texts()[-1], texts()[-1])
+    w._on_launcher_events({"stacks": {}, "result": {"id": "a", "ok": True, "msg": "old"}})
+    w._on_launcher_events({"stacks": {}, "result": {"id": "b", "ok": True, "msg": "map saved"}})
+    check("launcher results, not the one from before", texts()[-1] == "map saved" and "old" not in texts())
+
+    class St:
+        ok = True
+        def fresh(self, _t): return self.ok          # noqa: E704
+    st = St()
+    w.ros.is_connected = lambda: True
+    w.ros.topic_stats["scan"] = st
+    w._sensor_ok.clear()
+    w._check_sensors(); st.ok = False; w._check_sensors()
+    check("lidar lost", texts()[-1] == "no lidar for 3 s", texts()[-1])
+    st.ok = True; w._check_sensors()
+    check("lidar back", texts()[-1] == "lidar is back", texts()[-1])
+    del w.ros.is_connected, w.ros.topic_stats["scan"]
+
+    w.btns["events"].click(); pump()
+    check("opening Events clears the count", w.btns["events"].text() == "Events")
+    check("newest first", pe.table.item(0, 2).text() == "lidar is back", pe.table.item(0, 2).text())
+    pe.level.setCurrentIndex(2)
+    check("filter: errors only", pe.table.rowCount() == 3 and all(e.level == "error" for e in pe.shown()),
+          f"{pe.table.rowCount()}")
+    pe.level.setCurrentIndex(0)
+    pe.source.setCurrentIndex(pe.source.findData("Sensors"))
+    check("filter: by source", pe.table.rowCount() == 2)
+    pe.source.setCurrentIndex(0)
+    n = pe.table.rowCount()
+    w._log("info", "Mission", "a new event")
+    check("a live event goes on top", pe.table.rowCount() == n + 1 and pe.table.item(0, 2).text() == "a new event")
+    csv_path = Path(os.environ["XDG_CONFIG_HOME"]) / "export.csv"
+    check("CSV export", write_csv(csv_path, pe.shown()) == n + 1 and "a new event" in csv_path.read_text())
+    log2 = EventLog()
+    check("events survive a restart", [e.text for e in log2.events] == texts())
 
     print("\n[layout is kept]")
     w.apply_layout("monitor"); pump()

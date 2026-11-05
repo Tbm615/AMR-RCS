@@ -18,6 +18,9 @@ The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use
 - **Clearance bars on Teleop:** free distance ahead, behind and in any
   direction, from the robot's body (green, amber under 0.80 m, red under
   0.25 m). Display only.
+- **Events page:** connection, E-STOP, goals, missions, robot programs and
+  lost sensors with the time they happened; filter, export to CSV, kept across
+  restarts. The sidebar counts new warnings and errors.
 - Pages can shrink: a pane too small for its page gets scroll bars instead of
   stretching the window, and the 3D Map's controls wrap onto more lines.
 
