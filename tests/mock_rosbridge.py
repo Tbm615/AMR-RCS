@@ -32,6 +32,8 @@ import numpy as np
 import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # synthetic_rgbd
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "robot"))
+import map_preview                                               # noqa: E402
 
 
 HEAVY = False
@@ -66,6 +68,9 @@ class FakeLauncher:
         self.stacks = {k: {"state": "stopped", "detail": "", "since": time.time(), "args": {}, "log": []}
                        for k in ("bringup", "nav")}
         self.maps = ["map_a", "map_b"]
+        self.old = False            # True: behaves like the v0.4 launcher (no previews)
+        self.preview_out: list = []     # answers waiting to go on /rcs/launcher/preview
+        self.preview_asked: list = []
         self.result = {"id": "", "ok": True, "msg": ""}
 
     def _set(self, k, state, args=None):
@@ -74,6 +79,11 @@ class FakeLauncher:
     def command(self, cmd: dict) -> None:
         op, k = cmd.get("op"), cmd.get("stack")
         ok, msg = True, ""
+        if op == "map_preview":
+            self.preview_asked.append(cmd.get("name"))
+            if not self.old:
+                self.preview_out.append(self._preview(cmd.get("name", "")))
+            return
         if op == "start" and k == "bringup":
             self._set("bringup", "running"); msg = "bringup starting"
         elif op == "start" and k == "nav":
@@ -93,10 +103,22 @@ class FakeLauncher:
                 self.maps = sorted(set(self.maps) | {cmd.get("name", "")}); msg = f"map saved as {cmd.get('name')}"
         self.result = {"id": cmd.get("id", ""), "ok": ok, "msg": msg}
 
+    def _preview(self, name: str) -> dict:
+        if name == "map_b":
+            out = {"name": name, "error": "no preview for .png map images"}
+        else:
+            img = np.full((60, 80), 254, np.uint8)
+            img[:, 40] = 0
+            out = {"name": name, "png": base64.b64encode(map_preview.png_gray(img)).decode(), "saved": False,
+                   "width_m": 4.0, "height_m": 3.0, "resolution": 0.05, "mtime": 1000.0}
+        return {"op": "publish", "topic": "/rcs/launcher/preview", "msg": {"data": json.dumps(out)}}
+
     def state_msg(self) -> dict:
-        return {"op": "publish", "topic": "/rcs/launcher/state",
-                "msg": {"data": json.dumps({"version": 1, "time": time.time(), "stacks": self.stacks,
-                                            "maps": self.maps, "busy": "", "result": self.result})}}
+        st = {"version": 1, "time": time.time(), "stacks": self.stacks,
+              "maps": self.maps, "busy": "", "result": self.result}
+        if not self.old:
+            st["map_mtimes"] = {m: 1000.0 for m in self.maps}
+        return {"op": "publish", "topic": "/rcs/launcher/state", "msg": {"data": json.dumps(st)}}
 
 
 LAUNCHER = FakeLauncher()
@@ -358,6 +380,9 @@ async def handle(ws):
                         LAUNCHER.command(json.loads(m.get("msg", {}).get("data", "")))
                     except ValueError:
                         pass
+                    while LAUNCHER.preview_out:
+                        p = LAUNCHER.preview_out.pop(0)
+                        await _deliver(p["topic"], p)
             elif op == "call_service":
                 await send(ws, {"op": "service_response",
                                 "service": m.get("service"),

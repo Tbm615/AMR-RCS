@@ -220,7 +220,9 @@ stops navigation too (you are asked to confirm).
 Choose how the robot knows where it is, then click **Start**:
 
 - **Use a saved map:** pick a map from the list (the workspace's maps and the
-  ones you saved). After it starts, set the robot's position on the 2D Map
+  ones you saved). A preview shows under the list with its size, resolution
+  and date, so you can check it is the right one; click it to enlarge (wheel
+  zooms, drag pans). After it starts, set the robot's position on the 2D Map
   page (**Set initial pose**): **Open 2D Map** takes you there.
 - **Build a new map while driving (SLAM):** the map starts empty and grows on
   the 2D Map page as the robot moves (Teleop or goals). No initial pose

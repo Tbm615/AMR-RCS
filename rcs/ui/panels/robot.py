@@ -5,12 +5,17 @@ send_launcher_cmd). Nothing here runs ROS on the operator PC.
 """
 from __future__ import annotations
 
+import base64
 import re
+import time
+from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMessageBox, QPlainTextEdit, QPushButton, QRadioButton, QVBoxLayout, QWidget,
+    QButtonGroup, QComboBox, QDialog, QGraphicsScene, QGraphicsView, QGroupBox,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton,
+    QRadioButton, QVBoxLayout, QWidget,
 )
 
 from ...core.ros_client import RosClient
@@ -89,6 +94,78 @@ class _StackBox(QGroupBox):
         return key
 
 
+class _MapView(QGraphicsView):
+    """A map image to look at: wheel zooms, drag pans."""
+
+    def __init__(self, pix: QPixmap, parent=None):
+        super().__init__(parent)
+        self.setScene(QGraphicsScene(self))
+        self.scene().addPixmap(pix)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+
+    def wheelEvent(self, ev) -> None:
+        f = 1.25 if ev.angleDelta().y() > 0 else 0.8
+        self.scale(f, f)
+
+    def showEvent(self, ev) -> None:
+        super().showEvent(ev)
+        self.fitInView(self.scene().sceneRect(), Qt.KeepAspectRatio)
+
+
+class _MapPreview(QWidget):
+    """Thumbnail of the selected map with its size and date; click to enlarge."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.pix: Optional[QPixmap] = None
+        self.title = ""
+        h = QHBoxLayout(self)
+        h.setContentsMargins(26, 2, 0, 6)
+        h.setSpacing(12)
+        self.thumb = QLabel()
+        self.thumb.setFixedSize(200, 140)
+        self.thumb.setAlignment(Qt.AlignCenter)
+        self.thumb.setStyleSheet("background:#0b0d12; border:1px solid #262c3a; border-radius:5px;")
+        self.thumb.installEventFilter(self)
+        h.addWidget(self.thumb)
+        self.info = QLabel()
+        self.info.setProperty("muted", True)
+        self.info.setWordWrap(True)
+        h.addWidget(self.info, 1)
+
+    def show_message(self, text: str) -> None:
+        self.pix = None
+        self.thumb.clear()
+        self.thumb.setCursor(Qt.ArrowCursor)
+        self.thumb.setToolTip("")
+        self.info.setText(text)
+
+    def show_map(self, title: str, pix: QPixmap, info: str) -> None:
+        self.pix, self.title = pix, title
+        self.thumb.setPixmap(pix.scaled(self.thumb.size() - QSize(4, 4), Qt.KeepAspectRatio,
+                                        Qt.SmoothTransformation))
+        self.thumb.setCursor(Qt.PointingHandCursor)
+        self.thumb.setToolTip("Click to enlarge")
+        self.info.setText(info)
+
+    def eventFilter(self, obj, ev) -> bool:
+        if obj is self.thumb and ev.type() == QEvent.MouseButtonRelease and self.pix is not None:
+            self.enlarge()
+        return False
+
+    def enlarge(self) -> QDialog:
+        d = QDialog(self)
+        d.setWindowTitle(f"Map {self.title}")
+        d.resize(760, 620)
+        lay = QVBoxLayout(d)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(_MapView(self.pix, d))
+        d.setAttribute(Qt.WA_DeleteOnClose)
+        d.show()
+        return d
+
+
 class RobotPanel(QWidget):
     open_page = Signal(str)          # e.g. "map" after starting navigation
 
@@ -101,8 +178,11 @@ class RobotPanel(QWidget):
         self._state: dict = {}
         self._pending = ""           # id of the command we wait for
         self._connected = False
+        self._previews: dict = {}    # map name -> (mtime, answer, QPixmap or None)
+        self._preview_asked: dict = {}   # map name -> monotonic time of the request
         self._build()
         ros.launcher_state.connect(self._on_state)
+        ros.map_preview.connect(self._on_preview)
         t = QTimer(self); t.timeout.connect(self._refresh); t.start(1000)
 
     # ---- UI ----
@@ -136,6 +216,10 @@ class RobotPanel(QWidget):
         self.map_combo = QComboBox(); self.map_combo.setMinimumWidth(220)
         r1 = QHBoxLayout(); r1.addWidget(self.rb_map); r1.addWidget(self.map_combo); r1.addStretch(1)
         self.nav.extra.addLayout(r1)
+        self.preview = _MapPreview()
+        self.nav.extra.addWidget(self.preview)
+        self.map_combo.currentTextChanged.connect(lambda _t: self._update_preview())
+        self.rb_map.toggled.connect(lambda _on: self._update_preview())
         self.nav.extra.addWidget(self.rb_slam)
         self.nav_hint = QLabel(); self.nav_hint.setProperty("muted", True); self.nav_hint.setWordWrap(True)
         self.nav.extra.addWidget(self.nav_hint)
@@ -223,7 +307,9 @@ class RobotPanel(QWidget):
         if not ok:
             self._state = {}
             self._pending = ""
+            self._preview_asked.clear()
         self._refresh()
+        self._update_preview()
 
     def _on_state(self, st: dict) -> None:
         self._state = st
@@ -241,6 +327,57 @@ class RobotPanel(QWidget):
             color = GREEN if res.get("ok") else RED
             self.result.setText(f'<span style="color:{color}">{res.get("msg", "")}</span>')
         self._refresh()
+        self._update_preview()
+
+    # ---- map preview ----
+
+    PREVIEW_RETRY_S = 5.0
+
+    def _update_preview(self) -> None:
+        name = self.map_combo.currentText()
+        if not (self._connected and self.rb_map.isChecked() and name and self._state):
+            self.preview.setVisible(False)
+            return
+        self.preview.setVisible(True)
+        mtimes = self._state.get("map_mtimes")
+        if mtimes is None:          # robot still has the launcher of v0.4
+            self.preview.show_message("No preview: update rcs_launcher.py on the robot to see the map here.")
+            return
+        cached = self._previews.get(name)
+        if cached and cached[0] == mtimes.get(name):
+            self._show_cached(name, cached)
+            return
+        now = time.monotonic()
+        if now - self._preview_asked.get(name, -1e9) >= self.PREVIEW_RETRY_S:
+            self._preview_asked[name] = now
+            self.ros.send_launcher_cmd("map_preview", name=name)
+        self.preview.show_message("Loading preview…")
+
+    def _show_cached(self, name: str, cached: tuple) -> None:
+        mtime, ans, pix = cached
+        if pix is None:
+            self.preview.show_message(f"No preview: {ans.get('error', 'unreadable map')}")
+            return
+        date = time.strftime("%Y-%m-%d %H:%M", time.localtime(mtime)) if mtime else "?"
+        where = "saved from the app" if ans.get("saved") else "installed with the workspace"
+        self.preview.show_map(name, pix, f"{ans.get('width_m', 0):.1f} × {ans.get('height_m', 0):.1f} m\n"
+                                         f"{float(ans.get('resolution', 0)) * 100:.0f} cm per cell\n"
+                                         f"{date}\n{where}")
+
+    def _on_preview(self, ans: dict) -> None:
+        name = str(ans.get("name", ""))
+        self._preview_asked.pop(name, None)
+        pix = None
+        if "png" in ans:
+            p = QPixmap()
+            try:
+                if p.loadFromData(base64.b64decode(ans["png"]), "PNG"):
+                    pix = p
+            except ValueError:
+                pass
+        mtime = (self._state.get("map_mtimes") or {}).get(name, ans.get("mtime", 0.0))
+        self._previews[name] = (mtime, ans, pix)
+        self._update_preview()
 
     def _launcher_online(self) -> bool:
         stats = self.ros.topic_stats.get("launcher")

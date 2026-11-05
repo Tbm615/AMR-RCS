@@ -49,8 +49,9 @@ and the stack shows *failed* with its last log lines. Stop is Ctrl-C
 If the launcher itself restarts, it stops the programs it had started.
 
 Protocol (JSON in `std_msgs/String`): commands on `/rcs/launcher/cmd`, state
-on `/rcs/launcher/state` (1 Hz and on every change, transient local). See
-the docstring at the top of `rcs_launcher.py`.
+on `/rcs/launcher/state` (1 Hz and on every change, transient local), map
+previews on `/rcs/launcher/preview`. See the docstring at the top of
+`rcs_launcher.py`. `map_preview.py` must sit next to it.
 
 ## Logs (on the robot)
 

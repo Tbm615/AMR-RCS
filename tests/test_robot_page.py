@@ -75,6 +75,32 @@ def main() -> int:
     check("saved maps listed", wait_until(lambda: rp.map_combo.count() == 2, 3),
           f"{[rp.map_combo.itemText(i) for i in range(rp.map_combo.count())]}")
 
+    print("\n[map preview]")
+    rp.map_combo.setCurrentText("map_a")
+    check("preview of the selected map", wait_until(lambda: rp.preview.pix is not None, 4), rp.preview.info.text())
+    check("its size and date", "4.0 × 3.0 m" in rp.preview.info.text() and "5 cm" in rp.preview.info.text(),
+          rp.preview.info.text())
+    dlg = rp.preview.enlarge()
+    app.processEvents()
+    check("click enlarges it", dlg.isVisible())
+    dlg.close()
+    rp.map_combo.setCurrentText("map_b")
+    check("a map without preview says why", wait_until(lambda: "png map images" in rp.preview.info.text(), 4),
+          rp.preview.info.text())
+    n = len(mock_rosbridge.LAUNCHER.preview_asked)
+    rp.map_combo.setCurrentText("map_a")
+    check("known map comes from the cache", rp.preview.pix is not None
+          and len(mock_rosbridge.LAUNCHER.preview_asked) == n)
+    rp.rb_slam.setChecked(True)
+    check("hidden in SLAM mode", not rp.preview.isVisible())
+    rp.rb_map.setChecked(True)
+    check("back with a saved map", rp.preview.isVisible())
+    mock_rosbridge.LAUNCHER.old = True
+    check("old launcher: a hint, no error", wait_until(lambda: "update rcs_launcher" in rp.preview.info.text(), 4),
+          rp.preview.info.text())
+    mock_rosbridge.LAUNCHER.old = False
+    wait_until(lambda: rp.preview.pix is not None, 4)
+
     state = lambda k: rp._state.get("stacks", {}).get(k, {}).get("state")   # noqa: E731
     check("navigation Start disabled until the base runs", not rp.nav.start_btn.isEnabled())
     check("Save map disabled without navigation", not rp.save_btn.isEnabled())

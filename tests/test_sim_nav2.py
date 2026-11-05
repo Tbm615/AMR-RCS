@@ -95,6 +95,7 @@ def main() -> int:
     prof.host, prof.port = HOST, PORT
     w.profiles.upsert(prof)
     w._on_connect(prof)
+    w.btns["map"].click()       # only pages on screen are drawn
 
     print("\n[1] connect, map, pose")
     check("connected to rosbridge", wait_until(w.ros.is_connected, 15))
@@ -209,7 +210,7 @@ def main() -> int:
     w.p_mission._set_combo_to(m.id)
     n_before = len(w.p_mission.cur.waypoints)
     w.p_map.view.set_click_mode("waypoint")
-    w.p_map.view.pose_clicked.emit(1.0, 2.0)
+    w.p_map.view.waypoint_requested.emit(1.0, 2.0, 0.0)
     check("'Add waypoint' on the 2D Map page adds to the open mission",
           len(w.p_mission.cur.waypoints) == n_before + 1)
     w.p_mission.cur.waypoints.pop()

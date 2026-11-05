@@ -10,10 +10,15 @@ to it through two std_msgs/String topics carrying JSON:
       {"id": "...", "op": "start", "stack": "nav", "mode": "slam"}
       {"id": "...", "op": "stop",  "stack": "bringup" | "nav"}
       {"id": "...", "op": "save_map", "name": "office"}
+      {"id": "...", "op": "map_preview", "name": "office"}
 
   /rcs/launcher/state  robot -> app, 1 Hz and on every change
       {"version": 1, "stacks": {"bringup": {...}, "nav": {...}},
-       "maps": [...], "result": {"id", "ok", "msg"}}
+       "maps": [...], "map_mtimes": {name: mtime}, "result": {"id", "ok", "msg"}}
+
+  /rcs/launcher/preview  robot -> app, answer to map_preview
+      {"name": "office", "png": "<base64>", "width_m", "height_m", "resolution",
+       "mtime", "saved": true}   or   {"name": "office", "error": "..."}
 
 Stacks:
   bringup  drives, lidar, scan filter, camera (bringup.launch.py)
@@ -40,6 +45,8 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
+from map_preview import map_preview
+
 WS = Path(os.environ.get("RCS_WS", str(Path.home() / "tbm_test"))).expanduser()
 NAV_SHARE = WS / "install" / "navigation" / "share" / "navigation"
 MAP_DIRS = [NAV_SHARE / "maps", WS / "maps"]
@@ -59,6 +66,13 @@ def _maps() -> dict:
             for y in sorted(d.glob("*.yaml")):
                 out[y.stem] = str(y)
     return out
+
+
+def _mtime(path: str) -> float:
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
 
 
 def _nav_commands(mode: str, map_yaml: str = "") -> list:
@@ -224,6 +238,7 @@ class Launcher(Node):
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.pub = self.create_publisher(String, "/rcs/launcher/state", latched)
+        self.preview_pub = self.create_publisher(String, "/rcs/launcher/preview", 5)
         self.create_subscription(String, "/rcs/launcher/cmd", self._on_cmd, 10)
         self.result = {"id": "", "ok": True, "msg": ""}
         self.busy = ""             # description of the command being executed
@@ -258,8 +273,10 @@ class Launcher(Node):
         if STACKS["nav"].state in ("stopped", "failed") and \
                 self.count_publishers("/navigate_to_pose/_action/status"):
             stacks["nav"]["external"] = True
+        maps = _maps()
         msg = {"version": 1, "time": time.time(), "stacks": stacks,
-               "maps": sorted(_maps()), "busy": self.busy, "result": self.result}
+               "maps": sorted(maps), "map_mtimes": {k: _mtime(v) for k, v in maps.items()},
+               "busy": self.busy, "result": self.result}
         self.pub.publish(String(data=json.dumps(msg)))
 
     # -- commands --
@@ -271,6 +288,10 @@ class Launcher(Node):
             return
         if not isinstance(cmd, dict):
             return
+        if cmd.get("op") == "map_preview":      # read-only: fine while a stack is starting
+            threading.Thread(target=self._send_preview, args=(str(cmd.get("name", "")),),
+                             daemon=True).start()
+            return
         with self._lock:
             if self.busy:
                 self._finish(cmd, False, f"busy: {self.busy}")
@@ -278,6 +299,16 @@ class Launcher(Node):
             self.busy = f"{cmd.get('op')} {cmd.get('stack', cmd.get('name', ''))}".strip()
         self.publish_state()
         threading.Thread(target=self._run, args=(cmd,), daemon=True).start()
+
+    def _send_preview(self, name: str) -> None:
+        path = _maps().get(name)
+        try:
+            if path is None:
+                raise ValueError("map not found on the robot")
+            out = {"name": name, "saved": Path(path).parent == SAVED_MAPS, **map_preview(path)}
+        except Exception as e:      # a bad map file must not touch the launcher
+            out = {"name": name, "error": str(e)}
+        self.preview_pub.publish(String(data=json.dumps(out)))
 
     def _run(self, cmd: dict) -> None:
         try:

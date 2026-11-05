@@ -538,6 +538,44 @@ def test_clearance() -> None:
           and t.bar_front.text() == "no lidar")
 
 
+# ---- 4c. Map preview made on the robot ----
+
+def test_map_preview(tmp_path: Path) -> None:
+    print("\n[Map preview]")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "map_preview", Path(__file__).resolve().parent.parent / "robot" / "map_preview.py")
+    mp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mp)
+    from PySide6.QtGui import QPixmap
+
+    h, w = 2000, 1000
+    img = np.full((h, w), 254, np.uint8)
+    img[500, :] = 0                                   # a one-cell wall
+    pgm = tmp_path / "office.pgm"
+    pgm.write_bytes(b"P5\n# CREATOR: map_saver\n%d %d\n255\n" % (w, h) + img.tobytes())
+    yml = tmp_path / "office.yaml"
+    yml.write_text("image: office.pgm\nmode: trinary\nresolution: 0.05\norigin: [-5, -5, 0]\n")
+    check("reads map_saver's PGM (with a comment)", np.array_equal(mp.read_pgm(pgm), img))
+    small = mp.shrink(img)
+    check("shrunk to fit", max(small.shape) <= mp.MAX_PX, f"{small.shape}")
+    check("a one-cell wall survives", (small == 0).any())
+    out = mp.map_preview(str(yml))
+    check("size in metres", out["width_m"] == 50.0 and out["height_m"] == 100.0, f"{out['width_m']}")
+    png = base64.b64decode(out["png"])
+    pix = QPixmap()
+    check("valid PNG", pix.loadFromData(png, "PNG") and max(pix.width(), pix.height()) <= mp.MAX_PX)
+    check("small enough for one message", len(out["png"]) < 200_000, f"{len(out['png'])}")
+    px = pix.toImage()
+    check("pixels survive encoding", px.pixelColor(0, 0).red() == 254)
+    yml.write_text("image: office.png\nresolution: 0.05\n")
+    try:
+        mp.map_preview(str(yml))
+        check("other image types refused", False)
+    except ValueError as e:
+        check("other image types refused", "no preview" in str(e), str(e))
+
+
 # ---- 5b. Waypoint table: multi-select, remove, move, bulk settings ----
 
 def test_mission_multiselect(tmp_path: Path) -> None:
@@ -617,6 +655,7 @@ def main() -> int:
         test_camera()
         test_tf()
         test_clearance()
+        test_map_preview(Path(td))
         test_mission_executor(Path(td))
         test_mission_multiselect(Path(td))
     print(f"\n--- {PASS} passed, {FAIL} failed ---")

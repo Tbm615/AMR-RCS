@@ -21,6 +21,10 @@ The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use
 - **Events page:** connection, E-STOP, goals, missions, robot programs and
   lost sensors with the time they happened; filter, export to CSV, kept across
   restarts. The sidebar counts new warnings and errors.
+- **Map preview on Robot programs:** picture, size, resolution and date of the
+  selected map; click to enlarge. Needs the new `rcs_launcher.py` and
+  `map_preview.py` on the robot (`robot/README.md`); with the old launcher the
+  page says so and everything else works as before.
 - Pages can shrink: a pane too small for its page gets scroll bars instead of
   stretching the window, and the 3D Map's controls wrap onto more lines.
 
