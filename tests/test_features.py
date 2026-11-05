@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QVector3D
 from PySide6.QtWidgets import QApplication
 _app = QApplication.instance() or QApplication(sys.argv)
 
@@ -255,6 +256,115 @@ def test_pointcloud() -> None:
         check("3D panel skipped (no GL)", True)
 
 
+# ---- 2b. Fusion view: 2D layers and goals in the 3D page ----
+
+def test_fusion() -> None:
+    print("\n[Fusion view]")
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+    from rcs.ui.panels.view3d import HAVE_GL
+    if not HAVE_GL:
+        check("fusion skipped (no GL)", True)
+        return
+    p = View3DPanel()
+    p.view.resize(800, 600)     # not shown: the offscreen platform has no OpenGL
+
+    # laser at (1, 2) facing +y: a beam straight ahead at 1 m lands on (1, 3)
+    scan = {"angle_min": 0.0, "angle_max": 0.0, "angle_increment": 0.1, "range_min": 0.0,
+            "range_max": 10.0, "ranges": [1.0]}
+    p.set_scan(scan, 1.0, 2.0, math.pi / 2)
+    pts = p.scan_pts.pos
+    check("lidar in the map frame", len(pts) == 1 and abs(pts[0][0] - 1) < 1e-4 and abs(pts[0][1] - 3) < 1e-4,
+          f"{pts}")
+    p.ck_scan.setChecked(False)
+    p.set_scan({**scan, "ranges": [2.0]}, 0.0, 0.0, 0.0)
+    check("lidar layer off skips the update", abs(p.scan_pts.pos[0][1] - 3) < 1e-4)
+    p.ck_scan.setChecked(True)
+
+    p.set_path({"poses": [{"pose": {"position": {"x": i, "y": 0}}} for i in range(4)]})
+    check("planned path drawn", len(p.path_line.pos) == 4)
+    p.set_path({"poses": []})
+    check("empty path clears it", len(p.path_line.pos) == 0)
+
+    p.set_goal(1.0, 1.0, 0.0)
+    check("goal arrow shown", p.goal_arrow.visible() and abs(p.goal_arrow.pos[1][0] - 2.0) < 1e-4)
+    p.set_goal(None, None)
+    check("goal cleared", not p.goal_arrow.visible())
+
+    p.set_waypoints([(0, 0, "1  a", 0.0), (1, 1, "2  b", 1.57)])
+    check("waypoints, headings and labels", len(p.wp_pts.pos) == 2 and len(p.wp_labels) == 2
+          and p.wp_heads.visible())
+    p.ck_wps.setChecked(False)
+    check("waypoints layer hides labels too", not p.wp_pts.visible() and not p.wp_labels[0].visible())
+    p.ck_wps.setChecked(True)
+    p.set_waypoints([])
+    check("waypoints cleared", len(p.wp_pts.pos) == 0 and not p.wp_labels and not p.wp_heads.visible())
+
+    # costmap in odom, odom 2 m ahead of map: pixel (0,0) lands at frame + origin
+    cost = {"info": {"width": 2, "height": 3, "resolution": 0.5,
+                     "origin": {"position": {"x": 1.0, "y": 0.0}, "orientation": {"z": 0.0, "w": 1.0}}},
+            "data": [100, 0, 0, 0, 0, 0]}
+    check("costmap fed only when its layer is on", p.layer_on("lcost") and not p.layer_on("gcost"))
+    p.set_local_costmap(cost, (2.0, 0.0, 0.0))
+    m = p.lcost.transform().map(QVector3D(1, 0, 0))
+    check("costmap placed through its frame", abs(m.x() - 3.5) < 1e-4 and abs(m.y()) < 1e-4, f"{m}")
+
+    p.set_view_mode("3d")
+    check("3D only hides the 2D layers", p.ck_cloud.isChecked() and not p.ck_scan.isChecked()
+          and not p.ck_floor.isChecked())
+    p.set_view_mode("2d")
+    check("2D only hides the cloud", not p.ck_cloud.isChecked() and p.ck_scan.isChecked())
+    p.set_view_mode("fusion")
+    check("fusion shows both", p.ck_cloud.isChecked() and p.ck_scan.isChecked() and p.ck_lcost.isChecked())
+
+    # floor picking round-trips through the camera
+    v = p.view
+    v.setCameraPosition(distance=12, elevation=50, azimuth=-120)
+    sx, sy = v.screen_point(1.5, -2.0)
+    g = v.ground_point(sx, sy)
+    check("floor point under the mouse", g is not None and abs(g[0] - 1.5) < 1e-2 and abs(g[1] + 2.0) < 1e-2,
+          f"{g}")
+    check("above the horizon misses the floor", (lambda e: (v.setCameraPosition(elevation=2),
+          v.ground_point(v.width() / 2, 0.0), v.setCameraPosition(elevation=50))[1])(0) is None)
+
+    def mouse(kind, x, y, btn=Qt.LeftButton, buttons=Qt.LeftButton):
+        pos = QPointF(x, y)
+        return QMouseEvent(kind, pos, v.mapToGlobal(pos), btn, buttons, Qt.NoModifier)
+
+    got = []
+    p.goal_requested.connect(lambda *a: got.append(("goal",) + a))
+    p.pose_requested.connect(lambda *a: got.append(("pose",) + a))
+    p.waypoint_requested.connect(lambda *a: got.append(("wp",) + a))
+
+    def drag(ax, ay, bx, by):
+        s0, s1 = v.screen_point(ax, ay), v.screen_point(bx, by)
+        v.mousePressEvent(mouse(QEvent.MouseButtonPress, *s0))
+        v.mouseMoveEvent(mouse(QEvent.MouseMove, *s1, Qt.NoButton))
+        v.mouseReleaseEvent(mouse(QEvent.MouseButtonRelease, *s1, Qt.LeftButton, Qt.NoButton))
+
+    for i, (key, name) in enumerate((("goal", "goal"), ("pose", "pose"), ("waypoint", "wp"))):
+        p.mouse_mode.setCurrentIndex(p.mouse_mode.findData(key))
+        got.clear()
+        drag(1.0, 1.0, 1.0, 3.0)
+        ok = len(got) == 1 and got[0][0] == name and abs(got[0][1] - 1) < 0.02 and abs(got[0][2] - 1) < 0.02 \
+            and abs(got[0][3] - math.pi / 2) < 0.02
+        check(f"drag on the floor: {key} with heading", ok, f"{got}")
+    check("aim arrow hidden after release", not p.aim_arrow.visible())
+
+    got.clear()
+    s0 = v.screen_point(0, 0)
+    v.mousePressEvent(mouse(QEvent.MouseButtonPress, *s0))
+    check("aim arrow shown while dragging", p.aim_arrow.visible())
+    v.mousePressEvent(mouse(QEvent.MouseButtonPress, *s0, Qt.RightButton, Qt.LeftButton | Qt.RightButton))
+    v.mouseReleaseEvent(mouse(QEvent.MouseButtonRelease, *s0, Qt.LeftButton, Qt.NoButton))
+    check("right-click cancels", not got and not p.aim_arrow.visible())
+
+    p.mouse_mode.setCurrentIndex(0)
+    got.clear()
+    drag(0.0, 0.0, 1.0, 1.0)
+    check("Orbit mode sends nothing", not got)
+
+
 # ---- 3. Camera JPEG decoder ----
 
 def test_camera() -> None:
@@ -462,6 +572,7 @@ def main() -> int:
         test_map_view()
         test_goal_arrow()
         test_pointcloud()
+        test_fusion()
         test_camera()
         test_tf()
         test_mission_executor(Path(td))

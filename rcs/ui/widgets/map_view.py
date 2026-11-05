@@ -220,6 +220,10 @@ class MapView(pg.PlotWidget):
     def show_local_costmap(self, on: bool) -> None:
         self.local_cost_img.setVisible(on)
 
+    def layer_on(self, kind: str) -> bool:
+        """Whether this costmap ('gcost'/'lcost') is drawn here."""
+        return (self.cost_img if kind == "gcost" else self.local_cost_img).isVisible()
+
     # ---- data slots ----
 
     def set_occupancy(self, msg: dict) -> None:

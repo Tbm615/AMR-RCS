@@ -21,6 +21,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="rcs_layout_cfg_")
 os.environ["APPDATA"] = os.environ["XDG_CONFIG_HOME"]
 
+import numpy as np
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -124,6 +125,32 @@ def main() -> int:
     check("2D Map redrawn, Navigation/Missions not", views == (w.p_map.view,), f"{views}")
     w._show("nav", "right"); pump()
     check("Navigation joins once on screen", set(w._map_views()) == {w.p_map.view, w.p_nav.view})
+
+    print("\n[fusion view gets the same data as the 2D map]")
+    w.apply_layout("mapping"); pump()
+    p3 = w.p_3d
+    w._send_goal(1.0, 2.0, 0.5)
+    check("goal shown in 3D too", p3._goal == (1.0, 2.0, 0.5))
+    w._on_nav_state("succeeded")
+    check("reached goal cleared in 3D", p3._goal is None)
+    w.p_mission.add_waypoint_at(2.0, 3.0, 0.0); pump()
+    check("mission waypoints reach the 3D page", len(p3.wp_pts.pos) == len(w.p_mission.cur.waypoints))
+    n = len(w.p_mission.cur.waypoints)
+    p3.waypoint_requested.emit(3.0, 3.0, 1.0); pump()
+    check("waypoint set on the 3D floor joins the mission", len(w.p_mission.cur.waypoints) == n + 1)
+    sent = []
+    w.ros.send_nav_goal = lambda *a: sent.append(a)
+    p3.goal_requested.emit(4.0, 5.0, 0.0)
+    check("goal set on the 3D floor is sent", sent == [(4.0, 5.0, 0.0)])
+    w._on_scan({"_xy": (np.array([1.0], "float32"), np.array([0.0], "float32"))})
+    pump()
+    check("lidar reaches the 3D page", len(p3.scan_pts.pos) == 1)
+    w._on_plan({"poses": [{"pose": {"position": {"x": 0.0, "y": 0.0}}}] * 3})
+    check("path reaches the 3D page", len(p3.path_line.pos) == 3)
+    w._on_local_costmap({"info": {"width": 2, "height": 2, "resolution": 0.5, "origin": {}},
+                         "data": [0, 0, 0, 100], "header": {"frame_id": "map"}})
+    pump()
+    check("local costmap reaches the 3D page", p3.lcost is not None)
 
     print("\n[layout is kept]")
     w.apply_layout("monitor"); pump()

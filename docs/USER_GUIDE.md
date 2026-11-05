@@ -445,8 +445,17 @@ is built in the app while you drive (Teleop or goals):
 - View: **left-drag** orbits, **right-drag** (or Shift+left-drag) pans,
   **wheel** zooms. **Top view**, **Perspective** and **Whole map** set the
   camera; **Follow robot** keeps the robot in the middle (panning turns it
-  off). Layers: 3D map, robot, trajectory (orange), the 2D map on the floor,
-  grid. **Point size** changes the dot size.
+  off). **Point size** changes the dot size.
+- **View** picks what is drawn: **Fusion 2D + 3D** (default) shows the 3D map
+  together with the 2D map on the floor and the live lidar, planned path,
+  local costmap, goal and mission waypoints, **3D map only** hides the 2D
+  layers, **2D layers only** hides the 3D map and looks from above.
+  **Layers ▾** switches each layer on or off one by one (also the global
+  costmap, robot, trajectory and grid). These layers use the data the 2D
+  pages already receive, so they cost no extra Wi-Fi.
+- **Mouse** chooses what a left press-and-drag does: **Orbit view**, or
+  **Set goal**, **Set initial pose**, **Add waypoint**: press on the floor
+  and drag toward the heading, like on the 2D Map (right-click cancels).
 
 The page needs OpenGL; on PCs without it the page shows a notice.
 

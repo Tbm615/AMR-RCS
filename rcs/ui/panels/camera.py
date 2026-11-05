@@ -12,7 +12,7 @@ class CameraPanel(QWidget):
         super().__init__(parent)
         self.image_lbl = QLabel("no camera stream")
         self.image_lbl.setAlignment(Qt.AlignCenter)
-        self.image_lbl.setMinimumSize(640, 480)
+        self.image_lbl.setMinimumSize(240, 180)
         self.image_lbl.setStyleSheet("background:#000; color:#5b6378;")
         self.hz_lbl = QLabel("—"); self.hz_lbl.setProperty("muted", True)
         v = QVBoxLayout(self)

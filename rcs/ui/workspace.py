@@ -27,7 +27,7 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QApplication, QMenu, QSplitter, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QFrame, QMenu, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget,
 )
 
 # preset name -> menu label (layouts are built in Workspace.apply_preset)
@@ -126,12 +126,20 @@ class Workspace(QWidget):
     # ---- pages ----
 
     def add_page(self, key: str, title: str, widget: QWidget) -> None:
-        widget.setProperty("page_key", key)
-        self.pages[key] = widget
+        # in a scroll area so a page with many controls does not force its
+        # pane (and the window) wider than the screen; scroll bars only
+        # appear when the pane really is too small
+        holder = QScrollArea()
+        holder.setWidget(widget)
+        holder.setWidgetResizable(True)
+        holder.setFrameShape(QFrame.NoFrame)
+        holder.setFocusPolicy(Qt.NoFocus)
+        holder.setProperty("page_key", key)
+        self.pages[key] = holder
         self.titles[key] = title
         self.order.append(key)
-        widget.hide()
-        widget.setParent(self._park)
+        holder.hide()
+        holder.setParent(self._park)
 
     def visible_keys(self) -> set:
         return {k for k, w in self.pages.items() if w.isVisible()}

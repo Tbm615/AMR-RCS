@@ -61,6 +61,9 @@ QPushButton {{
 QPushButton:hover {{ background: #283044; }}
 QPushButton:pressed {{ background: #1a1f2b; }}
 QPushButton:disabled {{ color: #5b6378; background: #161a24; }}
+QToolButton {{ background: #1f2533; border: 1px solid {BORDER}; border-radius: 6px; padding: 7px 14px; }}
+QToolButton:hover {{ background: #283044; }}
+QToolButton::menu-indicator {{ image: none; width: 0; }}
 QPushButton[kind="primary"] {{ background: #2563eb; border-color: #3b82f6; color: white; }}
 QPushButton[kind="primary"]:hover {{ background: #2f6ff0; }}
 QPushButton[kind="danger"] {{ background: #c62828; border-color: #e53935; color: white; }}

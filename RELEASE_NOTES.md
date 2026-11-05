@@ -8,6 +8,16 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### Changes since v0.5.0-beta.1
+
+- **Fusion view on the 3D Map:** the 3D map with the 2D map on the floor and
+  the live lidar, planned path, costmaps, goal and mission waypoints in one
+  scene, or 3D only, or 2D layers only. **Layers ▾** switches each one.
+- **Goals, initial pose and waypoints from the 3D Map:** choose them in
+  **Mouse**, press on the floor and drag toward the heading.
+- Pages can shrink: a pane too small for its page gets scroll bars instead of
+  stretching the window, and the 3D Map's controls wrap onto more lines.
+
 ### Changes in v0.5.0-beta.1: several pages at once, multi-select waypoints
 
 Beta: the new layout was tested on Linux and in CI on Windows, not yet

@@ -334,6 +334,12 @@ class MainWindow(QMainWindow):
         # "Add waypoint" mode on the 2D Map page appends to the open mission
         self.p_map.view.waypoint_requested.connect(self.p_mission.add_waypoint_at)
         self.p_mission.waypoints_changed.connect(self.p_nav.view.set_waypoints)
+        self.p_mission.waypoints_changed.connect(self.p_3d.set_waypoints)
+        # the 3D Map can set the same things as the 2D Map
+        self.p_3d.goal_requested.connect(self._send_goal)
+        self.p_3d.pose_requested.connect(self.ros.publish_initial_pose)
+        self.p_3d.waypoint_requested.connect(self.p_mission.add_waypoint_at)
+        self.p_mission._emit_wps()      # the open mission was loaded before these connections
 
     def _on_connect(self, profile: RobotProfile) -> None:
         self.ros.set_profile(profile)
@@ -427,13 +433,13 @@ class MainWindow(QMainWindow):
                 self._update_progress()
         for kind, (ver, msg, pose) in list(self._layers.items()):
             targets = list(views)
-            if kind == "map" and "3d" in self._visible:
+            if "3d" in self._visible:
                 targets.append(self.p_3d)
             for v in targets:
                 key = (id(v), kind)
                 if self._applied.get(key) == ver:
                     continue
-                if kind != "map" and not (v.cost_img if kind == "gcost" else v.local_cost_img).isVisible():
+                if kind != "map" and not v.layer_on(kind):
                     continue            # overlay off: applied when it is switched on
                 self._applied[key] = ver
                 if kind == "map":
@@ -447,6 +453,8 @@ class MainWindow(QMainWindow):
             for v in views:
                 if v is not self.p_mission.view:
                     v.set_scan(self._scan_msg, self._laser_x, self._laser_y, self._laser_yaw)
+            if "3d" in self._visible:
+                self.p_3d.set_scan(self._scan_msg, self._laser_x, self._laser_y, self._laser_yaw)
 
     def _on_scan(self, m: dict) -> None:
         self._scan_msg = m
@@ -461,7 +469,7 @@ class MainWindow(QMainWindow):
 
     def _send_goal(self, x: float, y: float, yaw: float) -> None:
         self._goal = (x, y, yaw)
-        for v in (self.p_map.view, self.p_nav.view, self.p_mission.view):
+        for v in (self.p_map.view, self.p_nav.view, self.p_mission.view, self.p_3d):
             v.set_goal(x, y, yaw)
         self.ros.send_nav_goal(x, y, yaw)
 
@@ -490,6 +498,7 @@ class MainWindow(QMainWindow):
         self.p_map.view.set_path(m)
         self.p_nav.view.set_path(m)
         self.p_mission.view.set_path(m)
+        self.p_3d.set_path(m)
         poses = m.get("poses", [])
         self._plan_xy = [(p["pose"]["position"]["x"], p["pose"]["position"]["y"]) for p in poses]
         self._update_progress()
@@ -500,7 +509,7 @@ class MainWindow(QMainWindow):
         self._nav_state = state
         if state in ("succeeded", "canceled", "aborted"):
             self._goal = None
-            for v in (self.p_map.view, self.p_nav.view, self.p_mission.view):
+            for v in (self.p_map.view, self.p_nav.view, self.p_mission.view, self.p_3d):
                 v.set_goal(None, None)
         if state not in ("active", "pending"):
             self._plan_xy = []

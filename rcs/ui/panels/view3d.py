@@ -3,9 +3,14 @@ report.html that bringup's save_run writes.
 
 The map itself (rcs.core.cloud_map.CloudMap) is built by RosClient on its
 decoder thread from the camera's depth + color images (or a PointCloud2),
-each frame placed with the TF at its own timestamp. This page only draws it,
-plus the robot, its trajectory and the 2D map on the floor, and saves/loads
-the map as PLY (the same format as the report's map/cloud3d.ply).
+each frame placed with the TF at its own timestamp. This page draws it, plus
+the robot, its trajectory and the 2D map on the floor, and saves/loads the map
+as PLY (the same format as the report's map/cloud3d.ply).
+
+Fusion view: the live 2D layers (lidar, planned path, costmaps, goal, mission
+waypoints) are drawn in the same scene, from the data the 2D pages already
+receive, so it costs no extra Wi-Fi. Goals, the initial pose and waypoints can
+be set here too: press on the floor and drag toward the heading.
 """
 from __future__ import annotations
 
@@ -15,22 +20,49 @@ from typing import Optional
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QGuiApplication, QVector3D, QVector4D
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
-    QMessageBox, QPushButton, QSlider, QVBoxLayout, QWidget,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QLabel, QMenu, QMessageBox,
+    QPushButton, QSlider, QToolButton, QVBoxLayout, QWidget,
 )
 
 from ...core import cloud_map as cm
+from ..widgets.flow import FlowLayout
 
 try:
     import pyqtgraph.opengl as gl
-    from pyqtgraph import Vector
+    from pyqtgraph import Transform3D, Vector
     HAVE_GL = True
 except Exception:  # noqa: BLE001
     HAVE_GL = False
 
 BG = (17, 21, 28)                 # same background as the report viewer
 DISPLAY_MAX = 1_500_000           # points drawn at most (the map may hold more)
+# heights of the 2D layers in the scene (m): stacked so they do not z-fight
+Z_FLOOR, Z_GCOST, Z_LCOST, Z_PATH, Z_MARK, Z_SCAN = -0.01, 0.0, 0.005, 0.04, 0.06, 0.2
+
+VIEW_MODES = [
+    ("fusion", "Fusion 2D + 3D"),
+    ("3d", "3D map only"),
+    ("2d", "2D layers only"),
+]
+MOUSE_MODES = [
+    ("orbit", "Orbit view"),
+    ("goal", "Set goal"),
+    ("pose", "Set initial pose"),
+    ("waypoint", "Add waypoint"),
+]
+
+
+def _arrow_segments(x: float, y: float, yaw: float, z: float, length: float = 1.0) -> np.ndarray:
+    """Line pairs of an arrow from (x, y) along yaw, for GLLinePlotItem 'lines'."""
+    tip = np.array([x + length * math.cos(yaw), y + length * math.sin(yaw), z])
+    base = np.array([x, y, z])
+    pts = [base, tip]
+    for side in (2.6, -2.6):
+        a = yaw + side
+        pts += [tip, tip + 0.28 * length * np.array([math.cos(a), math.sin(a), 0.0])]
+    return np.array(pts, np.float32)
 
 
 def _decode_pointcloud2(msg: dict) -> Optional[np.ndarray]:
@@ -42,10 +74,95 @@ def _decode_pointcloud2(msg: dict) -> Optional[np.ndarray]:
 if HAVE_GL:
     class _GLView(gl.GLViewWidget):
         """Report-style controls: left-drag orbits, right/middle-drag (or
-        shift+left) pans, wheel zooms."""
+        shift+left) pans, wheel zooms. With a mouse mode other than orbit,
+        left press-drag-release on the floor aims an arrow instead."""
+
+        # the offscreen platform (headless tests) has no OpenGL to draw with
+        def initializeGL(self):
+            if QGuiApplication.platformName() != "offscreen":
+                super().initializeGL()
+
+        def paintGL(self):
+            if QGuiApplication.platformName() != "offscreen":
+                super().paintGL()
+
+        mode = "orbit"
+        on_aim = None           # (x, y, yaw) while aiming, None when it stops
+        on_aimed = None         # (mode, x, y, yaw) on release
+        _anchor = None
+
+        def ground_point(self, px: float, py: float):
+            """Map-frame (x, y) of the floor under a widget position, or None
+            if that ray misses the floor (above the horizon)."""
+            w, h = self.width(), self.height()
+            if w <= 0 or h <= 0:
+                return None
+            vp = self.getViewport()
+            m, ok = (self.projectionMatrix(vp, vp) * self.viewMatrix()).inverted()
+            if not ok:
+                return None
+            nx, ny = 2.0 * px / w - 1.0, 1.0 - 2.0 * py / h
+            a, b = m.map(QVector4D(nx, ny, -1, 1)), m.map(QVector4D(nx, ny, 1, 1))
+            if a.w() == 0 or b.w() == 0:
+                return None
+            ax, ay, az = a.x() / a.w(), a.y() / a.w(), a.z() / a.w()
+            bx, by, bz = b.x() / b.w(), b.y() / b.w(), b.z() / b.w()
+            if abs(bz - az) < 1e-9:
+                return None
+            t = -az / (bz - az)
+            if t <= 0:
+                return None
+            return ax + t * (bx - ax), ay + t * (by - ay)
+
+        def screen_point(self, x: float, y: float, z: float = 0.0):
+            """Widget position of a map-frame point (the inverse of ground_point)."""
+            vp = self.getViewport()
+            p = (self.projectionMatrix(vp, vp) * self.viewMatrix()).map(QVector3D(x, y, z))
+            return (p.x() + 1) / 2 * self.width(), (1 - p.y()) / 2 * self.height()
+
+        def _yaw_to(self, pos) -> float:
+            g = self.ground_point(pos.x(), pos.y())
+            if g is None or math.hypot(g[0] - self._anchor[0], g[1] - self._anchor[1]) < 1e-3:
+                return 0.0
+            return math.atan2(g[1] - self._anchor[1], g[0] - self._anchor[0])
+
+        def cancel_aim(self) -> None:
+            self._anchor = None
+            if self.on_aim:
+                self.on_aim(None)
+
+        def mousePressEvent(self, ev):
+            pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+            if self._anchor is not None and ev.button() == Qt.RightButton:
+                self.cancel_aim()
+                return
+            if self.mode != "orbit" and ev.button() == Qt.LeftButton \
+                    and not ev.modifiers() & Qt.ShiftModifier:
+                g = self.ground_point(pos.x(), pos.y())
+                if g is not None:
+                    self._anchor = g
+                    if self.on_aim:
+                        self.on_aim((g[0], g[1], 0.0))
+                return
+            super().mousePressEvent(ev)
+
+        def mouseReleaseEvent(self, ev):
+            if self._anchor is not None and ev.button() == Qt.LeftButton:
+                pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+                x, y = self._anchor
+                yaw = self._yaw_to(pos)
+                self.cancel_aim()
+                if self.on_aimed:
+                    self.on_aimed(self.mode, x, y, yaw)
+                return
+            super().mouseReleaseEvent(ev)
 
         def mouseMoveEvent(self, ev):
             pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+            if self._anchor is not None:
+                if self.on_aim:
+                    self.on_aim((self._anchor[0], self._anchor[1], self._yaw_to(pos)))
+                return
             if not hasattr(self, "mousePos") or self.mousePos is None:
                 self.mousePos = pos
             diff = pos - self.mousePos
@@ -70,6 +187,9 @@ if HAVE_GL:
 class View3DPanel(QWidget):
     recording_changed = Signal(bool)      # main window turns the streams on/off
     source_changed = Signal(str)          # "rgbd" | "cloud"
+    goal_requested = Signal(float, float, float)
+    pose_requested = Signal(float, float, float)
+    waypoint_requested = Signal(float, float, float)
 
     def __init__(self, cloud_map: Optional[cm.CloudMap] = None, parent=None):
         super().__init__(parent)
@@ -123,10 +243,42 @@ class View3DPanel(QWidget):
         self.heading = gl.GLLinePlotItem(pos=np.zeros((2, 3), np.float32), color=(0.35, 0.62, 0.96, 1),
                                          width=3, antialias=True)
         self.view.addItem(self.heading)
+        # fusion layers
+        self.gcost = None               # GLImageItems, made with the first costmap
+        self.lcost = None
+        self.scan_pts = gl.GLScatterPlotItem(pos=np.zeros((0, 3), np.float32), size=3.0, pxMode=True,
+                                             color=(1.0, 0.42, 0.42, 1.0))
+        self.scan_pts.setGLOptions("opaque")
+        self.view.addItem(self.scan_pts)
+        self.path_line = gl.GLLinePlotItem(pos=np.zeros((0, 3), np.float32), color=(0.22, 0.85, 0.54, 1),
+                                           width=3, antialias=True)
+        self.view.addItem(self.path_line)
+        self.goal_arrow = gl.GLLinePlotItem(pos=np.zeros((2, 3), np.float32), color=(0.22, 0.85, 0.54, 1),
+                                            width=3, antialias=True, mode="lines")
+        self.goal_arrow.hide()
+        self.view.addItem(self.goal_arrow)
+        self.aim_arrow = gl.GLLinePlotItem(pos=np.zeros((2, 3), np.float32), color=(1.0, 0.71, 0.28, 1),
+                                           width=3, antialias=True, mode="lines")
+        self.aim_arrow.hide()
+        self.view.addItem(self.aim_arrow)
+        self.wp_pts = gl.GLScatterPlotItem(pos=np.zeros((0, 3), np.float32), size=11.0, pxMode=True,
+                                           color=(1.0, 0.71, 0.28, 1.0))
+        self.wp_pts.setGLOptions("opaque")
+        self.view.addItem(self.wp_pts)
+        self.wp_heads = gl.GLLinePlotItem(pos=np.zeros((2, 3), np.float32), color=(1.0, 0.71, 0.28, 1),
+                                          width=2, antialias=True, mode="lines")
+        self.wp_heads.hide()
+        self.view.addItem(self.wp_heads)
+        self.wp_labels: list = []
+        self._goal = None
+        self.view.on_aim = self._show_aim
+        self.view.on_aimed = self._aimed
         v.addWidget(self.view, 1)
 
-        # ---- row 1: recording
-        r1 = QHBoxLayout()
+        # ---- controls: wrap onto more lines when the page is narrow
+        flow = FlowLayout()
+        v.addLayout(flow)
+        r1 = r2 = r3 = flow
         self.rec_btn = QPushButton("●  Record 3D map")
         self.rec_btn.setCheckable(True)
         self.rec_btn.setChecked(True)
@@ -160,11 +312,8 @@ class View3DPanel(QWidget):
         self.keep_bg = QCheckBox("Keep recording on other pages")
         self.keep_bg.setToolTip("Uses WiFi bandwidth all the time; off = only while this page is open")
         r1.addWidget(self.keep_bg)
-        r1.addStretch(1)
-        v.addLayout(r1)
 
-        # ---- row 2: view
-        r2 = QHBoxLayout()
+        # ---- view
         top = QPushButton("Top view"); top.clicked.connect(self.top_view)
         persp = QPushButton("Perspective"); persp.clicked.connect(self.perspective_view)
         fit = QPushButton("Whole map"); fit.clicked.connect(self.fit_map)
@@ -174,7 +323,20 @@ class View3DPanel(QWidget):
         self.follow.setToolTip("Keep the robot in the middle of the view (panning turns it off)")
         self.view.on_pan = lambda: self.follow.setChecked(False)
         r2.addWidget(self.follow)
-        r2.addSpacing(12)
+        r2.addWidget(QLabel("View"))
+        self.view_mode = QComboBox()
+        for key, label in VIEW_MODES:
+            self.view_mode.addItem(label, key)
+        self.view_mode.setToolTip("Fusion: 3D map with the live lidar, path, costmap, goal and waypoints")
+        r2.addWidget(self.view_mode)
+        r2.addWidget(QLabel("Mouse"))
+        self.mouse_mode = QComboBox()
+        for key, label in MOUSE_MODES:
+            self.mouse_mode.addItem(label, key)
+        self.mouse_mode.setToolTip("Other than Orbit: press on the floor and drag toward the heading.\n"
+                                   "Right-click cancels. Right-drag still pans, the wheel zooms.")
+        self.mouse_mode.currentIndexChanged.connect(self._mouse_mode_changed)
+        r2.addWidget(self.mouse_mode)
         r2.addWidget(QLabel("Point size"))
         self.psize = QSlider(Qt.Horizontal)
         self.psize.setRange(1, 8)
@@ -182,25 +344,45 @@ class View3DPanel(QWidget):
         self.psize.setFixedWidth(110)
         self.psize.valueChanged.connect(lambda _v: self._redraw_cloud(force=True))
         r2.addWidget(self.psize)
-        r2.addSpacing(12)
-        self.ck_cloud = QCheckBox("3D map"); self.ck_cloud.setChecked(True)
-        self.ck_robot = QCheckBox("Robot"); self.ck_robot.setChecked(True)
-        self.ck_traj = QCheckBox("Trajectory"); self.ck_traj.setChecked(True)
-        self.ck_floor = QCheckBox("2D map on floor"); self.ck_floor.setChecked(True)
-        self.ck_grid = QCheckBox("Grid"); self.ck_grid.setChecked(True)
+        layers = QToolButton()
+        layers.setText("Layers ▾")
+        layers.setPopupMode(QToolButton.InstantPopup)
+        lm = QMenu(layers)
+        layers.setMenu(lm)
+
+        def layer(label: str, on: bool = True):
+            a = lm.addAction(label)
+            a.setCheckable(True)
+            a.setChecked(on)
+            return a
+
+        self.ck_cloud = layer("3D map")
+        self.ck_robot = layer("Robot")
+        self.ck_traj = layer("Trajectory")
+        self.ck_floor = layer("2D map on floor")
+        self.ck_scan = layer("Lidar scan")
+        self.ck_path = layer("Planned path")
+        self.ck_gcost = layer("Global costmap", False)
+        self.ck_lcost = layer("Local costmap")
+        self.ck_goal = layer("Goal")
+        self.ck_wps = layer("Waypoints")
+        self.ck_grid = layer("Grid")
         self.ck_cloud.toggled.connect(self.scatter.setVisible)
         self.ck_robot.toggled.connect(lambda b: (self.box.setVisible(b and self._robot is not None),
                                                  self.heading.setVisible(b)))
         self.ck_traj.toggled.connect(self.traj_line.setVisible)
         self.ck_floor.toggled.connect(lambda b: self.floor.setVisible(b) if self.floor else None)
         self.ck_grid.toggled.connect(self.grid.setVisible)
-        for w in (self.ck_cloud, self.ck_robot, self.ck_traj, self.ck_floor, self.ck_grid):
-            r2.addWidget(w)
-        r2.addStretch(1)
-        v.addLayout(r2)
+        self.ck_scan.toggled.connect(self.scan_pts.setVisible)
+        self.ck_path.toggled.connect(self.path_line.setVisible)
+        self.ck_gcost.toggled.connect(lambda b: self.gcost.setVisible(b) if self.gcost else None)
+        self.ck_lcost.toggled.connect(lambda b: self.lcost.setVisible(b) if self.lcost else None)
+        self.ck_goal.toggled.connect(lambda b: self.goal_arrow.setVisible(b and self._goal is not None))
+        self.ck_wps.toggled.connect(self._show_waypoints)
+        r2.addWidget(layers)
+        self.view_mode.currentIndexChanged.connect(lambda _i: self.set_view_mode(self.view_mode.currentData()))
 
-        # ---- row 3: file + status
-        r3 = QHBoxLayout()
+        # ---- file + status
         op = QPushButton("Open PLY…"); op.clicked.connect(self._open_ply)
         op.setToolTip("Load a saved 3D map, e.g. result/run_*/map/cloud3d.ply from save_run")
         sv = QPushButton("Save PLY…"); sv.clicked.connect(self._save_ply)
@@ -209,8 +391,8 @@ class View3DPanel(QWidget):
         r3.addWidget(op); r3.addWidget(sv); r3.addWidget(clr)
         self.status = QLabel("not recording")
         self.status.setProperty("muted", True)
-        r3.addWidget(self.status, 1)
-        v.addLayout(r3)
+        self.status.setWordWrap(True)
+        v.addWidget(self.status)
 
         self._timer = QTimer(self)
         self._timer.setInterval(400)
@@ -332,6 +514,7 @@ class View3DPanel(QWidget):
         if self.floor is None:
             self.floor = gl.GLImageItem(data, smooth=False)
             self.floor.setGLOptions("translucent")
+            self.floor.setDepthValue(-10)       # drawn first: blended lines stay on top
             self.floor.setVisible(self.ck_floor.isChecked())
             self.view.addItem(self.floor)
         else:
@@ -339,6 +522,142 @@ class View3DPanel(QWidget):
         self.floor.resetTransform()
         self.floor.translate(float(o.get("x", 0.0)), float(o.get("y", 0.0)), -0.01)
         self.floor.scale(res, res, 1)
+
+    # ---- fusion layers (same data and calls as the 2D map views) ----
+
+    def layer_on(self, kind: str) -> bool:
+        """Whether the main window should feed this costmap ('gcost'/'lcost')."""
+        if not HAVE_GL:
+            return False
+        return (self.ck_gcost if kind == "gcost" else self.ck_lcost).isChecked()
+
+    def set_view_mode(self, mode: str) -> None:
+        """Turn the layers on and off for a view; Layers fine-tunes it after."""
+        if not HAVE_GL:
+            return
+        two_d = (self.ck_floor, self.ck_scan, self.ck_path, self.ck_lcost, self.ck_goal, self.ck_wps)
+        for a in two_d:
+            a.setChecked(mode != "3d")
+        self.ck_cloud.setChecked(mode != "2d")
+        if mode == "2d":
+            self.top_view()
+
+    def set_scan(self, msg: dict, map_tx: float, map_ty: float, map_yaw: float) -> None:
+        if not HAVE_GL or not self.ck_scan.isChecked():
+            return
+        from ...core.ros_client import scan_points
+        lx, ly = msg["_xy"] if "_xy" in msg else scan_points(msg)
+        c, s = math.cos(map_yaw), math.sin(map_yaw)
+        pts = np.empty((len(lx), 3), np.float32)
+        pts[:, 0] = lx * c - ly * s + map_tx
+        pts[:, 1] = lx * s + ly * c + map_ty
+        pts[:, 2] = Z_SCAN
+        self.scan_pts.setData(pos=pts)
+
+    def set_path(self, msg: dict) -> None:
+        if not HAVE_GL:
+            return
+        poses = msg.get("poses", [])
+        pts = np.array([[p["pose"]["position"]["x"], p["pose"]["position"]["y"], Z_PATH] for p in poses],
+                       np.float32).reshape(-1, 3)
+        self.path_line.setData(pos=pts)
+
+    def set_goal(self, x, y, yaw=0.0) -> None:
+        if not HAVE_GL:
+            return
+        self._goal = None if x is None else (float(x), float(y), float(yaw or 0.0))
+        if self._goal is not None:
+            self.goal_arrow.setData(pos=_arrow_segments(*self._goal, Z_MARK))
+        self.goal_arrow.setVisible(self._goal is not None and self.ck_goal.isChecked())
+
+    def set_waypoints(self, pts: list) -> None:
+        """pts: (x, y), (x, y, label) or (x, y, label, yaw), as for MapView."""
+        if not HAVE_GL:
+            return
+        for t in self.wp_labels:
+            self.view.removeItem(t)
+        self.wp_labels = []
+        xyz = np.array([[float(p[0]), float(p[1]), Z_MARK] for p in pts], np.float32).reshape(-1, 3)
+        self.wp_pts.setData(pos=xyz)
+        heads = [_arrow_segments(float(p[0]), float(p[1]), float(p[3]), Z_MARK, 0.6)
+                 for p in pts if len(p) >= 4 and p[3] is not None]
+        if heads:
+            self.wp_heads.setData(pos=np.concatenate(heads))
+        self.wp_heads.setVisible(bool(heads) and self.ck_wps.isChecked())
+        for p in pts:
+            if len(p) >= 3 and p[2]:
+                t = gl.GLTextItem(pos=(float(p[0]), float(p[1]), 0.25), text=str(p[2]),
+                                  color=(255, 181, 71, 255), font=QFont("Sans", 11))
+                t.setVisible(self.ck_wps.isChecked())
+                self.view.addItem(t)
+                self.wp_labels.append(t)
+
+    def _show_waypoints(self, on: bool) -> None:
+        self.wp_pts.setVisible(on)
+        self.wp_heads.setVisible(on and len(self.wp_pts.pos) > 0)
+        for t in self.wp_labels:
+            t.setVisible(on)
+
+    def _cost_item(self, attr: str, on: bool):
+        item = getattr(self, attr)
+        if item is None:
+            item = gl.GLImageItem(np.zeros((1, 1, 4), np.uint8), smooth=False)
+            item.setGLOptions("translucent")
+            item.setDepthValue(-9 if attr == "gcost" else -8)
+            item.setVisible(on)
+            self.view.addItem(item)
+            setattr(self, attr, item)
+        return item
+
+    def _set_cost(self, attr: str, on: bool, z: float, msg: dict, frame_pose) -> None:
+        from ...core.ros_client import cost_rgba, grid_from_msg
+        info = msg.get("info", {})
+        rgba = msg.get("_rgba")
+        if rgba is None:
+            g = grid_from_msg(msg)
+            if g is None:
+                return
+            rgba = cost_rgba(g)
+        item = self._cost_item(attr, on)
+        item.setData(np.ascontiguousarray(rgba.transpose(1, 0, 2)))     # [x, y]
+        res = float(info.get("resolution", 0.05))
+        origin = info.get("origin", {})
+        o, q = origin.get("position", {}), origin.get("orientation", {})
+        oyaw = math.atan2(2 * q.get("w", 1.0) * q.get("z", 0.0), 1 - 2 * q.get("z", 0.0) ** 2)
+        fx, fy, fyaw = frame_pose
+        # pixel -> costmap frame (origin, resolution) -> map frame (frame_pose)
+        tr = Transform3D()
+        tr.translate(fx, fy, z)
+        tr.rotate(math.degrees(fyaw), 0, 0, 1)
+        tr.translate(float(o.get("x", 0.0)), float(o.get("y", 0.0)), 0)
+        tr.rotate(math.degrees(oyaw), 0, 0, 1)
+        tr.scale(res, res, 1)
+        item.setTransform(tr)
+
+    def set_global_costmap(self, msg: dict, frame_pose=(0.0, 0.0, 0.0)) -> None:
+        if HAVE_GL:
+            self._set_cost("gcost", self.ck_gcost.isChecked(), Z_GCOST, msg, frame_pose)
+
+    def set_local_costmap(self, msg: dict, frame_pose=(0.0, 0.0, 0.0)) -> None:
+        if HAVE_GL:
+            self._set_cost("lcost", self.ck_lcost.isChecked(), Z_LCOST, msg, frame_pose)
+
+    # ---- goals on the floor ----
+
+    def _mouse_mode_changed(self, _i: int) -> None:
+        self.view.cancel_aim()
+        self.view.mode = self.mouse_mode.currentData()
+
+    def _show_aim(self, pose) -> None:
+        if pose is None:
+            self.aim_arrow.hide()
+            return
+        self.aim_arrow.setData(pos=_arrow_segments(*pose, Z_MARK + 0.02))
+        self.aim_arrow.show()
+
+    def _aimed(self, mode: str, x: float, y: float, yaw: float) -> None:
+        {"goal": self.goal_requested, "pose": self.pose_requested,
+         "waypoint": self.waypoint_requested}[mode].emit(x, y, yaw)
 
     # ---- camera presets ----
 
