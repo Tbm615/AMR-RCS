@@ -35,7 +35,7 @@ class Map2DPanel(QWidget):
         tools = QGroupBox("Tools")
         tv = QVBoxLayout(tools)
         self.mode = QComboBox()
-        self.mode.addItems(["Set goal", "Add waypoint", "Set initial pose"])
+        self.mode.addItems(["Set goal", "Add waypoint", "Set initial pose", "Measure distance"])
         self.mode.currentIndexChanged.connect(self._mode_changed)
         tv.addWidget(self.mode)
         self.hint = QLabel()
@@ -80,9 +80,10 @@ class Map2DPanel(QWidget):
            "Missions page.",
         2: "Press where the robot really is and drag toward the direction it faces; "
            "release to set the initial pose.",
+        3: "Press and drag between two points to measure the distance. Esc clears it.",
     }
 
     def _mode_changed(self, idx: int) -> None:
-        self.view.set_click_mode({0: "goal", 1: "waypoint", 2: "pose"}[idx])
+        self.view.set_click_mode({0: "goal", 1: "waypoint", 2: "pose", 3: "measure"}[idx])
         if hasattr(self, "hint"):
             self.hint.setText(self._HINTS[idx])

@@ -193,6 +193,9 @@ All map views share the same controls:
   (see [section 9](#9-map-localization-and-goals-2d-map)).
 - **Center on robot** / **Whole map** buttons (top-left of the map). A new
   map opens fitted; later map updates keep your zoom.
+- The map coordinates under the mouse show at the bottom left. On the 2D Map,
+  **Measure distance** (in the Tools list) draws a ruler: press and drag
+  between two points; Esc clears it.
 - Blue rectangle and line: the robot footprint and its heading.
 - Red dots: lidar points. Green line: path planned by Nav2.
 - Green arrow: the current Nav2 goal and the heading the robot will have.
@@ -263,6 +266,9 @@ Teleop commands go to `/cmd_vel_safe` at 20 Hz while you drive. When you let
 go, the app sends zero velocity for 0.3 s and then stops publishing, so it
 does not block Nav2. Like the gamepad, teleop bypasses the CBF safety
 filter: watch the robot while driving.
+
+**Speed.** **Slow**, **Medium** and **Full** (or keys **1**, **2**, **3**) drive
+at 25 %, 50 % or 100 % of the two limits, for the joystick and the keyboard.
 
 **Clearance.** The bars show the free distance from the robot's body to the
 nearest lidar point straight ahead (**Front**), straight behind (**Rear**)

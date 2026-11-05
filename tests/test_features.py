@@ -203,6 +203,28 @@ def test_goal_arrow() -> None:
     check("right-drag sends nothing", len(wps) == 1 and len(poses) == 1)
     v.set_waypoints([(0, 0, "1  a", 0.0), (1, 1, "2  b", 1.57)])
     check("waypoints drawn with heading arrows", len(v.wp_arrows) == 2)
+
+    # coordinates under the mouse and the ruler
+    vb.setRange(xRange=(-5, 5), yRange=(-5, 5), padding=0)
+    for _ in range(3):
+        QApplication.processEvents()
+    QTest.mouseMove(v.viewport(), px(2.0, -1.0))
+    QApplication.processEvents()
+    t = v.coord.text()
+    check("coordinates under the mouse", "+2.0" in t and "-1.0" in t and v.coord.isVisible(), t)
+    v.set_click_mode("measure")
+    wps.clear()
+    a, b = px(0.0, 0.0), px(3.0, 4.0)
+    QTest.mousePress(v.viewport(), Qt.LeftButton, Qt.NoModifier, a)
+    QTest.mouseMove(v.viewport(), b)
+    QTest.mouseRelease(v.viewport(), Qt.LeftButton, Qt.NoModifier, b)
+    check("ruler measures 5 m", v.ruler_m is not None and abs(v.ruler_m - 5.0) < 0.1, f"{v.ruler_m}")
+    check("ruler label", v.ruler_text.isVisible() and v.ruler_text.textItem.toPlainText().endswith(" m"))
+    check("measuring sends nothing", not wps and len(got) == 0)
+    QTest.mouseMove(v.viewport(), px(-3.0, 0.0))
+    check("ruler stays after release", abs(v.ruler_m - 5.0) < 0.1)
+    QTest.keyClick(v, Qt.Key_Escape)
+    check("Esc clears the ruler", v.ruler_m is None and not v.ruler_text.isVisible())
     v.close()
 
 
@@ -524,6 +546,21 @@ def test_clearance() -> None:
     check("empty scan is all clear", math.isinf(c.nearest))
 
     t = TeleopPanel()
+    t._tx_timer.stop()
+    sent = []
+    t.cmd_vel.connect(lambda a, b: sent.append((a, b)))
+    t.lin.setValue(0.4); t.ang.setValue(0.8)
+    t._key_lin, t._key_ang = 1.0, 1.0
+    t._tick()
+    check("Full speed uses the limits", sent[-1] == (0.4, 0.8), f"{sent[-1]}")
+    t.set_speed(0)
+    t._tick()
+    check("Slow is a quarter of them", abs(sent[-1][0] - 0.1) < 1e-6 and abs(sent[-1][1] - 0.2) < 1e-6, f"{sent[-1]}")
+    from PySide6.QtTest import QTest
+    QTest.keyClick(t, Qt.Key_2)
+    t._tick()
+    check("key 2 = Medium", abs(sent[-1][0] - 0.2) < 1e-6 and t.speed_btns.checkedId() == 1, f"{sent[-1]}")
+    t._key_lin = t._key_ang = 0.0
     t.set_clearance(compute_clearance(*pts((0.2, 0.0)), lid, hl, hw))     # 0.15 m
     check("red under 0.25 m", t.bar_front.color() == "#ff6a6a", t.bar_front.text())
     t.set_clearance(compute_clearance(*pts((0.55, 0.0)), lid, hl, hw))    # 0.50 m

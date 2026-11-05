@@ -7,14 +7,15 @@ import time
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QPainter
 from PySide6.QtWidgets import (
-    QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-    QPushButton, QVBoxLayout, QWidget,
+    QButtonGroup, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
+    QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from ...core.clearance import SLOW_DISTANCE, STOP_DISTANCE, Clearance
 from ..widgets.joystick import Joystick
 
 STALE_S = 1.0       # no scan for this long: the bars stop claiming anything
+SPEEDS = [("Slow", 0.25), ("Medium", 0.5), ("Full", 1.0)]    # share of the limits below
 
 
 class _ClearanceBar(QWidget):
@@ -79,6 +80,7 @@ class TeleopPanel(QWidget):
         self._key_ang = 0.0
         self._estop = False
         self._clear_t = 0.0
+        self._scale = 1.0
         self.setFocusPolicy(Qt.StrongFocus)
         self._build()
 
@@ -132,6 +134,19 @@ class TeleopPanel(QWidget):
         self.ang.valueChanged.connect(lambda v: setattr(self, "_ang_lim", v))
         f.addRow("Max linear", self.lin)
         f.addRow("Max angular", self.ang)
+        sp = QHBoxLayout()
+        sp.setSpacing(6)
+        self.speed_btns = QButtonGroup(self)
+        for i, (label, share) in enumerate(SPEEDS):
+            b = QPushButton(f"{label}  {i + 1}")
+            b.setCheckable(True)
+            b.setFocusPolicy(Qt.NoFocus)        # keep the keys on this page
+            b.setToolTip(f"{share:.0%} of the limits above (key {i + 1})")
+            b.clicked.connect(lambda _c=False, n=i: self.set_speed(n))
+            self.speed_btns.addButton(b, i)
+            sp.addWidget(b)
+        f.addRow(sp)
+        self.set_speed(len(SPEEDS) - 1)
         side.addWidget(limits)
 
         cbox = QGroupBox("Clearance from the robot body")
@@ -201,9 +216,15 @@ class TeleopPanel(QWidget):
         self._jx = x
         self._jy = y
 
+    def set_speed(self, i: int) -> None:
+        self._scale = SPEEDS[i][1]
+        self.speed_btns.button(i).setChecked(True)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         k = event.key()
-        if k in (Qt.Key_W, Qt.Key_Up):
+        if Qt.Key_1 <= k < Qt.Key_1 + len(SPEEDS):
+            self.set_speed(k - Qt.Key_1)
+        elif k in (Qt.Key_W, Qt.Key_Up):
             self._key_lin = 1.0
         elif k in (Qt.Key_S, Qt.Key_Down):
             self._key_lin = -1.0
@@ -258,8 +279,8 @@ class TeleopPanel(QWidget):
             kl, ka = self._key_lin, self._key_ang
             lin_n = jy if abs(jy) > 1e-3 else kl
             ang_n = -jx if abs(jx) > 1e-3 else ka
-            lin = max(-1.0, min(1.0, lin_n)) * self._lin_lim
-            ang = max(-1.0, min(1.0, ang_n)) * self._ang_lim
+            lin = max(-1.0, min(1.0, lin_n)) * self._lin_lim * self._scale
+            ang = max(-1.0, min(1.0, ang_n)) * self._ang_lim * self._scale
             active = abs(lin) > 1e-4 or abs(ang) > 1e-4
         self._show_readout(lin, ang)
         if active:

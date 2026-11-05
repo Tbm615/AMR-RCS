@@ -174,6 +174,17 @@ class MapView(pg.PlotWidget):
         self.wp_arrows: list = []
         self.getPlotItem().vb.sigRangeChanged.connect(self._rescale_arrows)
 
+        # ruler: "measure" click mode, stays on the map until cleared
+        self.ruler_line = pg.PlotDataItem(pen=pg.mkPen("#4fd1ff", width=2, style=Qt.DashLine))
+        self.ruler_line.setZValue(25)
+        self.addItem(self.ruler_line)
+        self.ruler_text = pg.TextItem("", color="#4fd1ff", anchor=(0.5, 1.2), fill=pg.mkBrush(15, 17, 21, 210))
+        self.ruler_text.setZValue(26)
+        self.ruler_text.setVisible(False)
+        self.addItem(self.ruler_text)
+        self._ruler_a: Optional[tuple] = None   # first point while dragging
+        self.ruler_m: Optional[float] = None    # last measured distance
+
         self._map_origin = (0.0, 0.0)
         self._map_res = 0.05
         self._robot_half_l = 0.45
@@ -190,7 +201,7 @@ class MapView(pg.PlotWidget):
         self._robot_xy = None
         self._fitted = False
         # floating view buttons (top-left corner of the map)
-        from PySide6.QtWidgets import QPushButton
+        from PySide6.QtWidgets import QLabel, QPushButton
         css = ("QPushButton { background: rgba(21,25,35,215); border: 1px solid #2a3142;"
                " border-radius: 6px; padding: 5px 10px; font-size: 12px; }"
                " QPushButton:hover { background: rgba(40,48,68,235); }")
@@ -202,6 +213,12 @@ class MapView(pg.PlotWidget):
             b.adjustSize()
         self.btn_robot.clicked.connect(lambda: self.center_on_robot())
         self.btn_map.clicked.connect(self.fit_map)
+        # map coordinates under the mouse (bottom-left corner of the map)
+        self.coord = QLabel("", self)
+        self.coord.setStyleSheet("background: rgba(21,25,35,215); border-radius: 4px; padding: 2px 6px;"
+                                 " font-size: 12px; color: #c6cad6;")
+        self.coord.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.coord.hide()
         self._place_buttons()
 
     # ---- public setters ----
@@ -213,6 +230,7 @@ class MapView(pg.PlotWidget):
     def set_click_mode(self, mode: str) -> None:
         self._click_mode = mode
         self.cancel_aim()
+        self.clear_ruler()
 
     def show_global_costmap(self, on: bool) -> None:
         self.cost_img.setVisible(on)
@@ -256,6 +274,8 @@ class MapView(pg.PlotWidget):
         if hasattr(self, "btn_robot"):
             self.btn_robot.move(60, 10)
             self.btn_map.move(60 + self.btn_robot.width() + 8, 10)
+        if hasattr(self, "coord"):
+            self.coord.move(60, self.height() - self.coord.height() - 34)
 
     def center_on_robot(self, span: float = 10.0) -> None:
         if self._robot_xy is None:
@@ -382,6 +402,34 @@ class MapView(pg.PlotWidget):
             self.aim_arrow.pose[2] if self.aim_arrow.pose else 0.0)
         self.aim_arrow.set_pose((ax, ay, yaw), self._units_per_px())
 
+    def clear_ruler(self) -> None:
+        self._ruler_a = None
+        self.ruler_m = None
+        self.ruler_line.setData([], [])
+        self.ruler_text.setVisible(False)
+
+    def _ruler_to(self, x: float, y: float) -> None:
+        ax, ay = self._ruler_a
+        self.ruler_m = math.hypot(x - ax, y - ay)
+        self.ruler_line.setData([ax, x], [ay, y])
+        self.ruler_text.setText(f"{self.ruler_m:.2f} m")
+        self.ruler_text.setPos((ax + x) / 2, (ay + y) / 2)
+        self.ruler_text.setVisible(True)
+
+    def _show_coord(self, ev) -> None:
+        if not self._in_plot(ev):
+            self.coord.hide()
+            return
+        x, y = self._view_xy(ev)
+        self.coord.setText(f"x {x:+.2f}   y {y:+.2f}")
+        self.coord.adjustSize()
+        self._place_buttons()
+        self.coord.show()
+
+    def leaveEvent(self, ev) -> None:
+        self.coord.hide()
+        super().leaveEvent(ev)
+
     def cancel_aim(self) -> None:
         self._anchor = None
         self._press_px = None
@@ -405,6 +453,11 @@ class MapView(pg.PlotWidget):
             self.cancel_aim()
             ev.accept()
             return
+        if ev.button() == Qt.LeftButton and self._click_mode == "measure" and self._in_plot(ev):
+            self._ruler_a = self._view_xy(ev)
+            self._ruler_to(*self._ruler_a)
+            ev.accept()
+            return
         if ev.button() in (Qt.RightButton, Qt.MiddleButton) and self._in_plot(ev):
             self._pan_last = self._view_xy(ev)
             ev.accept()
@@ -426,6 +479,11 @@ class MapView(pg.PlotWidget):
         ev.accept()
 
     def mouseMoveEvent(self, ev) -> None:
+        self._show_coord(ev)
+        if self._ruler_a is not None:
+            self._ruler_to(*self._view_xy(ev))
+            ev.accept()
+            return
         if self._pan_last is not None:
             x, y = self._view_xy(ev)
             self.getPlotItem().vb.translateBy(x=self._pan_last[0] - x, y=self._pan_last[1] - y)
@@ -440,6 +498,11 @@ class MapView(pg.PlotWidget):
         ev.accept()
 
     def mouseReleaseEvent(self, ev) -> None:
+        if self._ruler_a is not None and ev.button() == Qt.LeftButton:
+            self._ruler_to(*self._view_xy(ev))
+            self._ruler_a = None
+            ev.accept()
+            return
         if self._pan_last is not None and ev.button() in (Qt.RightButton, Qt.MiddleButton):
             self._pan_last = None
             ev.accept()
@@ -459,8 +522,9 @@ class MapView(pg.PlotWidget):
         ev.accept()
 
     def keyPressEvent(self, ev) -> None:
-        if ev.key() == Qt.Key_Escape and self._anchor is not None:
+        if ev.key() == Qt.Key_Escape and (self._anchor is not None or self.ruler_m is not None):
             self.cancel_aim()
+            self.clear_ruler()
             ev.accept()
             return
         super().keyPressEvent(ev)
