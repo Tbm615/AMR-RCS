@@ -404,13 +404,19 @@ each in turn.
    - **Tolerance:** how close counts as "arrived" (default 0.25 m).
    - **Dwell:** how long to wait at the waypoint before moving on.
 5. Tick **Loop route** to start again from the first waypoint after the last
-   one, until you stop it.
+   one. **Laps** sets how many times; *until stopped* runs until you stop it.
+
+**Undo** (or **Ctrl+Z**) takes back the last changes to the waypoints.
+**Export…** saves the mission to a file and **Import…** loads one as a new
+mission, for example to use it on another PC.
 
 Missions are saved automatically.
 
 **Run a mission**
 
 - **▶ Play:** start, or continue after a pause.
+- **▶ Start from selected waypoint:** select one row to begin there instead
+  of at the first waypoint.
 - **⏸ Pause:** cancel the current goal and keep the position in the list.
 - **■ Stop:** cancel and reset to the first waypoint.
 

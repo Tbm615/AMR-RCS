@@ -701,7 +701,95 @@ def test_mission_multiselect(tmp_path: Path) -> None:
     finally:
         QMessageBox.question = orig
     check("clear all empties the mission", panel.cur.waypoints == [] and panel.table.rowCount() == 0)
+
+    # undo walks back through the edits above
+    panel._undo()
+    check("undo brings the cleared waypoints back", len(panel.cur.waypoints) == 2, names())
+    check("and saves them", len(store.get(m.id).waypoints) == 2)
+    panel._undo()
+    check("undo again restores the Delete key removal", len(panel.cur.waypoints) == 3, names())
+    n = len(panel.cur.waypoints)
+    panel.add_waypoint_at(9.0, 9.0, 0.0)
+    panel.table.item(0, 1).setText("renamed")
+    panel._undo()
+    check("undo a typed edit", panel.cur.waypoints[0].name != "renamed")
+    panel._undo()
+    check("undo an added waypoint", len(panel.cur.waypoints) == n)
+    panel._exec_idx = 0
+    k = len(panel._undo_stack)
+    panel._undo()
+    check("no undo under a running mission", len(panel._undo_stack) == k)
+    panel._exec_idx = -1
+    panel._undo_stack.clear(); panel._load_selected()
+    check("nothing to undo disables the button", not panel.undo_btn.isEnabled())
+
+    # export / import
+    panel.cur.loop, panel.cur.laps = True, 3
+    panel._save()
+    path = str(tmp_path / "route")
+    panel.export_to(path)
+    imported = panel.import_from(path + ".json")
+    check("import makes a separate mission", imported is not None and imported.id != m.id
+          and imported.name == "sel (2)" and imported.laps == 3 and store.get(m.id) is not None,
+          f"{imported}")
+    check("import selects it", panel.cur.id == imported.id and len(panel.cur.waypoints) == n)
+    bad = tmp_path / "bad.json"
+    bad.write_text('{"waypoints": [{"nope": 1}]}')
+    orig_w = QMessageBox.warning
+    QMessageBox.warning = staticmethod(lambda *a, **k: None)
+    try:
+        check("a bad file is refused", panel.import_from(str(bad)) is None)
+    finally:
+        QMessageBox.warning = orig_w
     panel.close()
+
+
+def test_mission_laps(tmp_path: Path) -> None:
+    print("\n[Mission laps and start point]")
+    store = MissionStore(tmp_path / "missions_laps.json")
+    m = Mission.new("laps")
+    m.loop, m.laps = True, 2
+    m.waypoints = [Waypoint.new(n, float(i), 0.0) for i, n in enumerate("ABC")]
+    for w in m.waypoints:
+        w.tolerance, w.dwell = 0.3, 0.0
+    store.upsert(m)
+    p = MissionPanel(store)
+    p._exec_timer.stop()
+    p._set_combo_to(m.id)
+    goals = []
+    p.goal_requested.connect(lambda x, y, yaw: goals.append(x))
+
+    def run(ticks=30):
+        for _ in range(ticks):
+            if goals:
+                p.update_robot_pose(goals[-1], 0.0, 0.0, draw=False)
+            p._nav_state = "succeeded"
+            p._exec_tick()
+
+    p._play()
+    run()
+    check("two laps, then stops", goals == [0.0, 1.0, 2.0, 0.0, 1.0, 2.0] and not p._exec_running, f"{goals}")
+    check("says it is complete", p.status_lbl.text() == "mission complete", p.status_lbl.text())
+
+    goals.clear()
+    p.cur.laps = 1
+    p.select_rows([1])
+    check("start button needs one row", p.from_btn.isEnabled())
+    p._play_from_selected()
+    check("starts at the selected waypoint", goals == [1.0], f"{goals}")
+    check("shows the lap", "lap 1/1" in p.status_lbl.text(), p.status_lbl.text())
+    run()
+    check("runs to the end from there", goals == [1.0, 2.0] and not p._exec_running, f"{goals}")
+
+    goals.clear()
+    p.cur.laps = 0
+    p._play()
+    run(40)
+    check("0 laps = keeps going", p._exec_running and len(goals) > 6, f"{len(goals)}")
+    p._stop()
+    p.select_rows([0, 1])
+    check("start button off with two rows", not p.from_btn.isEnabled())
+    p.close()
 
 
 # ---- main ----
@@ -720,6 +808,7 @@ def main() -> int:
         test_map_preview(Path(td))
         test_mission_executor(Path(td))
         test_mission_multiselect(Path(td))
+        test_mission_laps(Path(td))
     print(f"\n--- {PASS} passed, {FAIL} failed ---")
     return 0 if FAIL == 0 else 1
 

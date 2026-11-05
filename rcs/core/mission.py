@@ -31,6 +31,7 @@ class Mission:
     id: str
     name: str
     loop: bool = False
+    laps: int = 0               # with loop: laps to run, 0 = until stopped
     waypoints: List[Waypoint] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -38,6 +39,7 @@ class Mission:
             "id": self.id,
             "name": self.name,
             "loop": self.loop,
+            "laps": self.laps,
             "waypoints": [asdict(w) for w in self.waypoints],
         }
 
@@ -47,6 +49,7 @@ class Mission:
             id=d.get("id") or str(uuid.uuid4())[:8],
             name=d.get("name", "mission"),
             loop=bool(d.get("loop", False)),
+            laps=int(d.get("laps", 0)),
             waypoints=[Waypoint(**w) for w in d.get("waypoints", [])],
         )
 

@@ -1,16 +1,20 @@
 """Mission panel: list of waypoints (checkpoints), loop route, executor."""
 from __future__ import annotations
 
+import copy
+import json
 import math
 import time
+import uuid
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QItemSelectionModel, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QGroupBox, QHBoxLayout,
-    QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QGroupBox,
+    QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ...core.mission import Mission, MissionStore, Waypoint
@@ -38,6 +42,8 @@ class MissionPanel(QWidget):
         self._in_tol_since = 0.0
         self._robot_x = 0.0
         self._robot_y = 0.0
+        self._lap = 0                   # laps finished in this run
+        self._undo_stack: list = []     # waypoint lists of the open mission
         self._build()
         self._reload_missions()
 
@@ -75,9 +81,27 @@ class MissionPanel(QWidget):
         self.name_edit.editingFinished.connect(self._rename)
         rename_row.addWidget(QLabel("Name:")); rename_row.addWidget(self.name_edit, 1)
         mv.addLayout(rename_row)
-        self.loop_ck = QCheckBox("Loop route (restart after last waypoint)")
+        lr = QHBoxLayout()
+        self.loop_ck = QCheckBox("Loop route")
+        self.loop_ck.setToolTip("Start again from the first waypoint after the last one")
         self.loop_ck.toggled.connect(self._loop_toggle)
-        mv.addWidget(self.loop_ck)
+        lr.addWidget(self.loop_ck)
+        lr.addStretch(1)
+        lr.addWidget(QLabel("Laps"))
+        self.laps_sb = QSpinBox()
+        self.laps_sb.setRange(0, 9999)
+        self.laps_sb.setSpecialValueText("until stopped")
+        self.laps_sb.setToolTip("How many times to run the route; 0 = until you stop it")
+        self.laps_sb.valueChanged.connect(self._laps_changed)
+        lr.addWidget(self.laps_sb)
+        mv.addLayout(lr)
+        fr = QHBoxLayout()
+        imp = QPushButton("Import…"); imp.clicked.connect(self._import)
+        exp = QPushButton("Export…"); exp.clicked.connect(self._export)
+        imp.setToolTip("Load a mission from a file (e.g. from another PC)")
+        exp.setToolTip("Save this mission to a file")
+        fr.addWidget(imp); fr.addWidget(exp)
+        mv.addLayout(fr)
         side.addWidget(mbox)
 
         wbox = QGroupBox("Waypoints — Ctrl/Shift-click to select several")
@@ -94,6 +118,7 @@ class MissionPanel(QWidget):
         # Delete only while the table (not a cell editor) has focus
         dk = QShortcut(QKeySequence.Delete, self.table, self._remove)
         dk.setContext(Qt.WidgetShortcut)
+        QShortcut(QKeySequence.Undo, self, self._undo).setContext(Qt.WidgetWithChildrenShortcut)
         wv.addWidget(self.table)
         row2 = QHBoxLayout()
         here = QPushButton("Set here"); here.clicked.connect(self._add_here)
@@ -102,13 +127,16 @@ class MissionPanel(QWidget):
         rm = QPushButton("Remove"); rm.setToolTip("Remove the selected waypoints (Delete)")
         rm.clicked.connect(self._remove)
         clr = QPushButton("Clear all"); clr.clicked.connect(self._clear_all)
+        self.undo_btn = QPushButton("Undo"); self.undo_btn.setToolTip("Undo the last change (Ctrl+Z)")
+        self.undo_btn.clicked.connect(self._undo)
+        self.undo_btn.setEnabled(False)
         for b in (here, up, down):
             row2.addWidget(b)
         wv.addLayout(row2)
         row3 = QHBoxLayout()
         self.sel_lbl = QLabel(""); self.sel_lbl.setProperty("muted", True)
         row3.addWidget(self.sel_lbl, 1)
-        row3.addWidget(rm); row3.addWidget(clr)
+        row3.addWidget(self.undo_btn); row3.addWidget(rm); row3.addWidget(clr)
         wv.addLayout(row3)
         side.addWidget(wbox)
 
@@ -133,13 +161,17 @@ class MissionPanel(QWidget):
         ev.addWidget(self.status_lbl)
         er = QHBoxLayout()
         self.play_btn = QPushButton("▶ Play"); self.play_btn.setProperty("kind", "success")
-        self.play_btn.clicked.connect(self._play)
+        self.play_btn.clicked.connect(lambda: self._play())
         self.pause_btn = QPushButton("⏸ Pause"); self.pause_btn.clicked.connect(self._pause)
         self.stop_btn = QPushButton("■ Stop"); self.stop_btn.setProperty("kind", "danger")
         self.stop_btn.clicked.connect(self._stop)
         for b in (self.play_btn, self.pause_btn, self.stop_btn):
             er.addWidget(b)
         ev.addLayout(er)
+        self.from_btn = QPushButton("▶ Start from selected waypoint")
+        self.from_btn.clicked.connect(self._play_from_selected)
+        self.from_btn.setEnabled(False)
+        ev.addWidget(self.from_btn)
         side.addWidget(ebox)
 
         side.addStretch(1)
@@ -168,6 +200,12 @@ class MissionPanel(QWidget):
         self.loop_ck.blockSignals(True)
         self.loop_ck.setChecked(self.cur.loop)
         self.loop_ck.blockSignals(False)
+        self.laps_sb.blockSignals(True)
+        self.laps_sb.setValue(self.cur.laps)
+        self.laps_sb.setEnabled(self.cur.loop)
+        self.laps_sb.blockSignals(False)
+        self._undo_stack.clear()
+        self.undo_btn.setEnabled(False)
         self._refresh_table()
         self._emit_wps()
 
@@ -243,9 +281,73 @@ class MissionPanel(QWidget):
                 self.mission_combo.setItemText(idx, self.cur.name)
 
     def _loop_toggle(self, on: bool) -> None:
+        self.laps_sb.setEnabled(on)
         if self.cur:
             self.cur.loop = on
             self._save()
+
+    def _laps_changed(self, n: int) -> None:
+        if self.cur:
+            self.cur.laps = n
+            self._save()
+
+    # ---- undo ----
+
+    UNDO_DEPTH = 30
+
+    def _remember(self) -> None:
+        """Call before changing the waypoints of the open mission."""
+        self._undo_stack.append(copy.deepcopy(self.cur.waypoints))
+        del self._undo_stack[:-self.UNDO_DEPTH]
+        self.undo_btn.setEnabled(True)
+
+    def _undo(self) -> None:
+        if not self.cur or not self._undo_stack or self._blocked_while_running():
+            return
+        self.cur.waypoints = self._undo_stack.pop()
+        self.undo_btn.setEnabled(bool(self._undo_stack))
+        self._save(); self._refresh_table(); self._emit_wps()
+
+    # ---- files ----
+
+    def _export(self) -> None:
+        if not self.cur:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Export mission", f"{self.cur.name}.json", "Mission (*.json)")
+        if path:
+            self.export_to(path)
+
+    def export_to(self, path: str) -> None:
+        if not path.lower().endswith(".json"):
+            path += ".json"
+        try:
+            Path(path).write_text(json.dumps(self.cur.to_dict(), indent=2))
+        except OSError as e:
+            QMessageBox.warning(self, "Export mission", f"Cannot write {path}:\n{e}")
+            return
+        self.status_lbl.setText(f"exported to {path}")
+
+    def _import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import mission", "", "Mission (*.json)")
+        if path:
+            self.import_from(path)
+
+    def import_from(self, path: str) -> Optional[Mission]:
+        try:
+            m = Mission.from_dict(json.loads(Path(path).read_text()))
+        except (OSError, ValueError, TypeError, AttributeError) as e:
+            QMessageBox.warning(self, "Import mission", f"Cannot read {path}:\n{e}")
+            return None
+        m.id = str(uuid.uuid4())[:8]            # never overwrite a mission here
+        names = {x.name for x in self.store.missions}
+        base, n = m.name, 2
+        while m.name in names:
+            m.name = f"{base} ({n})"
+            n += 1
+        self.store.upsert(m)
+        self._reload_missions()
+        self._set_combo_to(m.id)
+        return m
 
     def _add_here(self) -> None:
         if not self.cur:
@@ -254,6 +356,7 @@ class MissionPanel(QWidget):
                           getattr(self, "_robot_yaw", 0.0))
         wp.tolerance = self.tol_sb.value()
         wp.dwell = self.dwell_sb.value()
+        self._remember()
         self.cur.waypoints.append(wp)
         self._save(); self._refresh_table(); self._emit_wps()
 
@@ -267,6 +370,7 @@ class MissionPanel(QWidget):
         wp.yaw = yaw
         wp.tolerance = self.tol_sb.value()
         wp.dwell = self.dwell_sb.value()
+        self._remember()
         self.cur.waypoints.append(wp)
         self._save(); self._refresh_table(); self._emit_wps()
 
@@ -278,6 +382,7 @@ class MissionPanel(QWidget):
         if row >= len(self.cur.waypoints):
             return
         wp = self.cur.waypoints[row]
+        before = copy.deepcopy(self.cur.waypoints)
         try:
             if col == 1:
                 wp.name = item.text()
@@ -290,6 +395,8 @@ class MissionPanel(QWidget):
         except ValueError:
             self._refresh_table()
             return
+        self._undo_stack.append(before)
+        self.undo_btn.setEnabled(True)
         self._save(); self._emit_wps()
 
     def selected_rows(self) -> list:
@@ -307,6 +414,7 @@ class MissionPanel(QWidget):
         rows = self.selected_rows()
         self.view.set_waypoint_selection(rows)
         self.apply_btn.setEnabled(bool(rows))
+        self.from_btn.setEnabled(len(rows) == 1)
         self.sel_lbl.setText(f"{len(rows)} selected" if len(rows) > 1 else "")
 
     def _blocked_while_running(self) -> bool:
@@ -324,6 +432,7 @@ class MissionPanel(QWidget):
         n = len(self.cur.waypoints)
         if not rows or (delta < 0 and rows[0] == 0) or (delta > 0 and rows[-1] == n - 1):
             return
+        self._remember()
         wps = self.cur.waypoints
         for r in (rows if delta < 0 else reversed(rows)):
             wps[r], wps[r + delta] = wps[r + delta], wps[r]
@@ -336,6 +445,7 @@ class MissionPanel(QWidget):
         rows = self.selected_rows()
         if not rows:
             return
+        self._remember()
         for r in reversed(rows):
             del self.cur.waypoints[r]
         self._save(); self._refresh_table(); self._emit_wps()
@@ -349,13 +459,15 @@ class MissionPanel(QWidget):
                                 f"Remove all {len(self.cur.waypoints)} waypoints of '{self.cur.name}'?") \
                 != QMessageBox.Yes:
             return
-        self.cur.waypoints.clear()
+        self._remember()
+        self.cur.waypoints = []
         self._save(); self._refresh_table(); self._emit_wps()
 
     def _apply_to_selected(self) -> None:
         if not self.cur:
             return
         rows = self.selected_rows()
+        self._remember()
         for r in rows:
             self.cur.waypoints[r].tolerance = self.tol_sb.value()
             self.cur.waypoints[r].dwell = self.dwell_sb.value()
@@ -375,11 +487,20 @@ class MissionPanel(QWidget):
 
     # ---- executor ----
 
-    def _play(self) -> None:
+    def _play_from_selected(self) -> None:
+        rows = self.selected_rows()
+        if len(rows) == 1 and not self._exec_running:
+            self._play(rows[0])
+
+    def _play(self, start: Optional[int] = None) -> None:
         if not self.cur or not self.cur.waypoints:
             return
-        if self._exec_idx < 0:
+        if start is not None:
+            self._exec_idx = start
+            self._lap = 0
+        elif self._exec_idx < 0:
             self._exec_idx = 0
+            self._lap = 0
         self._exec_running = True
         self.event.emit("info", f"'{self.cur.name}' started ({len(self.cur.waypoints)} waypoints)")
         self._dispatch_current()
@@ -439,7 +560,10 @@ class MissionPanel(QWidget):
         self._nav_state = "pending"
         self._in_tol_since = 0.0
         wp = self.cur.waypoints[self._exec_idx]
-        self.status_lbl.setText(f"going to {wp.name} ({self._exec_idx+1}/{len(self.cur.waypoints)})")
+        lap = ""
+        if self.cur.loop:
+            lap = f" · lap {self._lap + 1}" + (f"/{self.cur.laps}" if self.cur.laps else "")
+        self.status_lbl.setText(f"going to {wp.name} ({self._exec_idx+1}/{len(self.cur.waypoints)}){lap}")
         self.goal_requested.emit(wp.x, wp.y, wp.yaw)
 
     def _exec_tick(self) -> None:
@@ -469,7 +593,8 @@ class MissionPanel(QWidget):
             self._exec_dwell_until = 0.0
             self._exec_idx += 1
             if self._exec_idx >= len(self.cur.waypoints):
-                if self.cur.loop:
+                self._lap += 1
+                if self.cur.loop and not (self.cur.laps and self._lap >= self.cur.laps):
                     self._exec_idx = 0
                 else:
                     self._exec_running = False
