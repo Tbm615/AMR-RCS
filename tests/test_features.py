@@ -575,6 +575,117 @@ def test_clearance() -> None:
           and t.bar_front.text() == "no lidar")
 
 
+# ---- 4b1. Gamepad on the PC ----
+
+class FakePad:
+    """Flydigi-like: sticks on 0, 1, 3, 4, a released trigger on 2 and 5."""
+
+    def __init__(self):
+        self.axes = [0.02, 0.0, -1.0, 0.0, 0.0, -1.0]
+        self.buttons = [False] * 10
+
+    def get_numaxes(self): return len(self.axes)              # noqa: E704
+    def get_axis(self, a): return self.axes[a]                # noqa: E704
+    def get_numbuttons(self): return len(self.buttons)        # noqa: E704
+    def get_button(self, b): return self.buttons[b]           # noqa: E704
+
+
+def test_gamepad() -> None:
+    print("\n[Gamepad]")
+    from rcs.core import gamepad as gp
+    from rcs.ui.panels.teleop import TeleopPanel
+
+    pad = FakePad()
+    r = gp.GamepadReader(pad)
+    for _ in range(gp.CALIBRATION_TICKS):
+        check_in = r.read()
+    check("nothing during calibration", check_in.linear == 0 and not r.calibrating)
+    check("triggers found", r.triggers == {2, 5}, f"{r.triggers}")
+    check("triggers never drive", r.axis_linear == 1 and r.axis_angular == 3, f"{r.axis_linear} {r.axis_angular}")
+
+    pad.axes[1] = -1.0
+    i = r.read()
+    check("no dead-man, no motion", i.linear == 0.0 and not i.deadman)
+    pad.buttons[gp.BTN_DEADMAN] = True
+    i = r.read()
+    check("LB held: stick up is forward", i.deadman and abs(i.linear - 1.0) < 1e-6, f"{i}")
+    pad.axes[3] = 1.0
+    check("right stick right turns right", r.read().angular < -0.99)
+    pad.axes[1], pad.axes[3] = -0.05, 0.05
+    i = r.read()
+    check("deadzone", i.linear == 0.0 and i.angular == 0.0, f"{i}")
+    pad.axes[1] = 0.0
+
+    pad.buttons[gp.BTN_ESTOP] = True
+    check("E-STOP on the press", r.read().estop)
+    check("not again while held", not r.read().estop)
+    pad.buttons[gp.BTN_ESTOP] = False
+    r.read()
+
+    held = FakePad()
+    held.buttons[gp.BTN_DEADMAN] = True          # LB taped down or stuck at start
+    r2 = gp.GamepadReader(held)
+    for _ in range(gp.CALIBRATION_TICKS):
+        r2.read()
+    held.axes[1] = -1.0
+    check("a button held at start is ignored", not r2.read().deadman)
+    held.buttons[gp.BTN_DEADMAN] = False
+    r2.read()
+    held.buttons[gp.BTN_DEADMAN] = True
+    check("until it is released once", r2.read().deadman)
+
+    # through the Teleop page
+    t = TeleopPanel()
+    t._tx_timer.stop()
+    sent = []
+    t.cmd_vel.connect(lambda a, b: sent.append((round(a, 3), round(b, 3))))
+    t.lin.setValue(0.4); t.ang.setValue(0.8)
+    pad = FakePad()
+    t.use_pad(gp.GamepadReader(pad), "fake pad")
+    for _ in range(gp.CALIBRATION_TICKS):
+        t._tick()
+    check("ready after calibration", "ready" in t.pad_lbl.text(), t.pad_lbl.text())
+    pad.axes[1] = -1.0
+    t._tick()
+    check("stick alone sends nothing", not sent, f"{sent}")
+    pad.buttons[gp.BTN_DEADMAN] = True
+    t._tick()
+    check("LB + stick drives at the limit", sent and sent[-1] == (0.4, 0.0), f"{sent}")
+    pad.buttons[gp.BTN_SPEED] = True
+    t._tick()
+    check("RB steps the speed", t.speed_btns.checkedId() == 0 and sent[-1] == (0.1, 0.0), f"{sent[-1]}")
+    pad.buttons[gp.BTN_SPEED] = False
+    pad.buttons[gp.BTN_DEADMAN] = False
+    t._tick()
+    check("releasing LB stops (zero sent)", sent[-1] == (0.0, 0.0), f"{sent[-1]}")
+    pad.buttons[gp.BTN_ESTOP] = True
+    t._tick()
+    check("B engages E-STOP", t.is_estopped())
+    t.set_estop_state(False)
+
+    class Gone:
+        def pump(self): return False            # noqa: E704
+        def close(self): pass                   # noqa: E704
+    t._backend = Gone()
+    t.pad_ck.blockSignals(True); t.pad_ck.setChecked(True); t.pad_ck.blockSignals(False)
+    evs = []
+    t.event.connect(lambda lv, tx: evs.append(tx))
+    pad.buttons[gp.BTN_DEADMAN] = True
+    t._tick()
+    check("unplugged: stops, unticks, tells", t._pad is None and not t.pad_ck.isChecked()
+          and evs == ["gamepad disconnected"] and sent[-1] == (0.0, 0.0), f"{evs} {sent[-1]}")
+
+    # real pygame, no pad plugged into this machine
+    os.environ["SDL_VIDEODRIVER"] = "dummy"
+    t2 = TeleopPanel()
+    t2._tx_timer.stop()
+    t2.pad_ck.setChecked(True)
+    check("no pad: says so and unticks (or a real pad was found)",
+          (not t2.pad_ck.isChecked() and "No gamepad" in t2.pad_lbl.text()) or t2._pad is not None,
+          t2.pad_lbl.text())
+    t2.pad_ck.setChecked(False)
+
+
 # ---- 4b2. Alert sounds ----
 
 def test_sounds(tmp_path: Path) -> None:
@@ -804,6 +915,7 @@ def main() -> int:
         test_camera()
         test_tf()
         test_clearance()
+        test_gamepad()
         test_sounds(Path(td))
         test_map_preview(Path(td))
         test_mission_executor(Path(td))

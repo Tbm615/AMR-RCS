@@ -412,6 +412,7 @@ class MainWindow(QMainWindow):
         self.ros.estop_received.connect(self._on_estop_remote)
         self.ros.launcher_state.connect(self._on_launcher_events)
         self.p_mission.event.connect(lambda level, text: self._log(level, "Mission", text))
+        self.p_teleop.event.connect(lambda level, text: self._log(level, "Teleop", text))
 
         self.p_robot.open_page.connect(lambda k: self._show(k))
 

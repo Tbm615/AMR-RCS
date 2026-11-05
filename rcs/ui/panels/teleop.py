@@ -7,11 +7,12 @@ import time
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QPainter
 from PySide6.QtWidgets import (
-    QButtonGroup, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
+    QButtonGroup, QCheckBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
     QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from ...core.clearance import SLOW_DISTANCE, STOP_DISTANCE, Clearance
+from ...core.gamepad import GamepadReader, Pygame, PadInput
 from ..widgets.joystick import Joystick
 
 STALE_S = 1.0       # no scan for this long: the bars stop claiming anything
@@ -69,6 +70,7 @@ class _ClearanceBar(QWidget):
 class TeleopPanel(QWidget):
     cmd_vel = Signal(float, float)       # (linear m/s, angular rad/s)
     estop_changed = Signal(bool)
+    event = Signal(str, str)             # level, text — for the Events page
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -81,6 +83,9 @@ class TeleopPanel(QWidget):
         self._estop = False
         self._clear_t = 0.0
         self._scale = 1.0
+        self._backend = None            # pygame wrapper, made when the gamepad is turned on
+        self._pad: GamepadReader = None
+        self._pad_in = PadInput(0.0, 0.0, False, False, False)
         self.setFocusPolicy(Qt.StrongFocus)
         self._build()
 
@@ -164,6 +169,18 @@ class TeleopPanel(QWidget):
         cv.addWidget(self.clear_note)
         side.addWidget(cbox)
 
+        gbox = QGroupBox("Gamepad on this PC")
+        gv = QVBoxLayout(gbox)
+        self.pad_ck = QCheckBox("Use gamepad")
+        self.pad_ck.setFocusPolicy(Qt.NoFocus)
+        self.pad_ck.toggled.connect(self._pad_toggled)
+        gv.addWidget(self.pad_ck)
+        self.pad_lbl = QLabel("Hold LB and use the sticks. RB: next speed. B: E-STOP.")
+        self.pad_lbl.setProperty("muted", True)
+        self.pad_lbl.setWordWrap(True)
+        gv.addWidget(self.pad_lbl)
+        side.addWidget(gbox)
+
         kb = QGroupBox("Keyboard")
         kg = QGridLayout(kb)
         kg.setHorizontalSpacing(12)
@@ -209,6 +226,65 @@ class TeleopPanel(QWidget):
             self._clear_t = 0.0
             for b in (self.bar_front, self.bar_rear, self.bar_near):
                 b.set_value(None)
+
+    # ---- gamepad ----
+
+    def _pad_toggled(self, on: bool) -> None:
+        if on:
+            self._open_pad()
+        else:
+            self._close_pad("Hold LB and use the sticks. RB: next speed. B: E-STOP.")
+
+    def _open_pad(self) -> None:
+        try:
+            if self._backend is None:
+                self._backend = Pygame()
+            name = self._backend.open()
+        except Exception as e:  # noqa: BLE001  (pygame missing or SDL refused)
+            self._pad_failed(f"Gamepad support is not available: {e}")
+            return
+        if name is None:
+            self._pad_failed("No gamepad found. Plug it in and tick the box again.")
+            return
+        self.use_pad(GamepadReader(self._backend.joy), name)
+
+    def use_pad(self, reader: GamepadReader, name: str) -> None:
+        self._pad = reader
+        self._pad_name = name
+        self.pad_lbl.setText(f"{name}: hands off for a second…")
+        self.event.emit("info", f"gamepad on: {name}")
+
+    def _pad_failed(self, text: str) -> None:
+        self._close_pad(text)
+        self.pad_ck.blockSignals(True)
+        self.pad_ck.setChecked(False)
+        self.pad_ck.blockSignals(False)
+
+    def _close_pad(self, text: str) -> None:
+        self._pad = None
+        self._pad_in = PadInput(0.0, 0.0, False, False, False)
+        if self._backend is not None:
+            self._backend.close()
+        self.pad_lbl.setText(text)
+
+    def _read_pad(self) -> None:
+        if self._pad is None:
+            return
+        try:
+            if self._backend is not None and not self._backend.pump():
+                raise OSError("gone")
+            was_calibrating = self._pad.calibrating
+            self._pad_in = p = self._pad.read()
+        except Exception:  # noqa: BLE001  (SDL drops the device when it is unplugged)
+            self._pad_failed("Gamepad disconnected.")
+            self.event.emit("warn", "gamepad disconnected")
+            return
+        if was_calibrating and not self._pad.calibrating:
+            self.pad_lbl.setText(f"{self._pad_name}: ready. Hold LB to drive, RB: speed, B: E-STOP.")
+        if p.estop:
+            self.estop_btn.setChecked(True)
+        if p.next_speed:
+            self.set_speed((self.speed_btns.checkedId() + 1) % len(SPEEDS))
 
     # ---- input handlers ----
 
@@ -270,15 +346,19 @@ class TeleopPanel(QWidget):
 
     def _tick(self) -> None:
         self._check_clearance_age()
+        self._read_pad()
         if self._estop:
             lin, ang = 0.0, 0.0
             active = True               # E-stop keeps streaming zeros
         else:
-            # joystick wins over keys when touched
+            # gamepad wins while its dead-man is held, then the on-screen
+            # joystick when touched, then the keys
             jx, jy = self._jx, self._jy
             kl, ka = self._key_lin, self._key_ang
             lin_n = jy if abs(jy) > 1e-3 else kl
             ang_n = -jx if abs(jx) > 1e-3 else ka
+            if self._pad_in.deadman:
+                lin_n, ang_n = self._pad_in.linear, self._pad_in.angular
             lin = max(-1.0, min(1.0, lin_n)) * self._lin_lim * self._scale
             ang = max(-1.0, min(1.0, ang_n)) * self._ang_lim * self._scale
             active = abs(lin) > 1e-4 or abs(ang) > 1e-4

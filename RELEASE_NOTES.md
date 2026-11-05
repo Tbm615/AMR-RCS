@@ -25,6 +25,18 @@ The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use
   selected map; click to enlarge. Needs the new `rcs_launcher.py` and
   `map_preview.py` on the robot (`robot/README.md`); with the old launcher the
   page says so and everything else works as before.
+- **Gamepad on the PC:** hold LB and drive with the sticks; RB changes speed, B
+  is E-STOP. **Speed steps** on Teleop: Slow, Medium, Full (keys 1, 2, 3).
+- **Saved places:** name a spot, Go there in one click, or add it to a mission.
+  **Use last position** sets the initial pose where the robot last was on this
+  map.
+- **Missions:** run a set number of laps, start from the selected waypoint, undo
+  (Ctrl+Z), export and import.
+- **Maps:** coordinates under the mouse, and a ruler (Measure distance).
+- **Keyboard:** F1–F11 open pages, Ctrl+1–5 the layouts, Esc stops the current
+  goal, F12 engages E-STOP from any window.
+- **Save your own layouts**, connect to the last robot at start, and sound
+  alerts on errors and warnings.
 - Pages can shrink: a pane too small for its page gets scroll bars instead of
   stretching the window, and the 3D Map's controls wrap onto more lines.
 

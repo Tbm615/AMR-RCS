@@ -283,6 +283,13 @@ go, the app sends zero velocity for 0.3 s and then stops publishing, so it
 does not block Nav2. Like the gamepad, teleop bypasses the CBF safety
 filter: watch the robot while driving.
 
+**Gamepad.** Plug a gamepad into the PC and tick **Use gamepad** (keep your
+hands off it for a second while it calibrates). Hold **LB** and drive with the
+left stick (forward, back) and right stick (turn): nothing moves unless LB is
+held, so a knocked pad cannot start the robot. **RB** changes the speed step and
+**B** engages E-STOP. It works while you look at any page, even with Teleop
+closed. If the pad is unplugged the robot stops and the box unticks.
+
 **Speed.** **Slow**, **Medium** and **Full** (or keys **1**, **2**, **3**) drive
 at 25 %, 50 % or 100 % of the two limits, for the joystick and the keyboard.
 
