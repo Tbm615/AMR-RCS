@@ -239,7 +239,10 @@ Choose how the robot knows where it is, then click **Start**:
   ones you saved). A preview shows under the list with its size, resolution
   and date, so you can check it is the right one; click it to enlarge (wheel
   zooms, drag pans). After it starts, set the robot's position on the 2D Map
-  page (**Set initial pose**): **Open 2D Map** takes you there.
+  page (**Set initial pose**): **Open 2D Map** takes you there. If the robot
+  has not been moved since it last ran on this map, **Use last position**
+  (here and on the 2D Map) sets it in one click; check that the lidar
+  points fall on the walls afterwards.
 - **Build a new map while driving (SLAM):** the map starts empty and grows on
   the 2D Map page as the robot moves (Teleop or goals). No initial pose
   needed; goals work right away inside the mapped area.
@@ -373,6 +376,13 @@ The same map with both costmaps shown, plus the **Nav2 status**:
 robot's position. **Estimated time** divides it by the robot's current speed
 (or the speed limit while the robot is standing still). You can send goals
 and cancel from this page too.
+
+**Saved places.** Name the spots you use often, like the charger. Drive the
+robot there and click **Save robot position**. Select a place and click
+**Go** (or double-click it) to send the robot there; **→ Mission** adds it to
+the open mission as a waypoint. Places show as teal diamonds on the maps
+(*Saved places* in the 2D Map overlays). A place belongs to the saved map it
+was stored on and only shows on that map.
 
 ---
 

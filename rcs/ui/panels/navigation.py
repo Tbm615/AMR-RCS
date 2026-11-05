@@ -6,15 +6,18 @@ from PySide6.QtWidgets import (
     QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
+from ...core.places import PlaceStore
 from ..widgets.map_view import MapView
+from ..widgets.places import PlacesBox
 
 
 class NavigationPanel(QWidget):
     goal_requested = Signal(float, float, float)
     cancel_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, places: PlaceStore, parent=None):
         super().__init__(parent)
+        self.places = PlacesBox(places)
         self.view = MapView()
         self.view.show_global_costmap(True)
         self.view.show_local_costmap(True)
@@ -47,6 +50,7 @@ class NavigationPanel(QWidget):
         cancel.clicked.connect(self.cancel_requested.emit)
         cv.addWidget(cancel)
         side.addWidget(ctrl)
+        side.addWidget(self.places)
 
         side.addStretch(1)
         wrap = QWidget()

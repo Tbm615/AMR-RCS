@@ -27,6 +27,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from rcs.core.events import EventLog, write_csv
+from rcs.core.places import PlaceStore
 from rcs.core.profile import load_settings
 from rcs.ui import theme
 from rcs.ui.main_window import MainWindow
@@ -271,6 +272,71 @@ def main() -> int:
     check("connects the active robot on start", len(done) == 1 and done[0].id == w.profiles.active().id)
     w.p_conn.auto_ck.setChecked(False)
     w.settings["auto_connect"] = False
+
+    print("\n[saved places]")
+    pl = w.p_nav.places
+    w.btns["nav"].click(); pump()
+    check("needs a robot position first", not pl.here_btn.isEnabled() or pl.pose is not None)
+    pl.set_pose(1.0, 2.0, 0.5)
+    pl.set_map("office")
+    check("saved at the robot", pl.add_here("Charger") is not None
+          and (pl.store.places[-1].x, pl.store.places[-1].map) == (1.0, "office"))
+    check("listed", pl.list.count() == 1 and pl.list.item(0).text() == "Charger")
+    check("drawn on the maps", len(w.p_map.view.place_dots.data) == 1 and len(w.p_nav.view._place_labels) == 1)
+    pl.list.setCurrentRow(0)
+    sent = []
+    w.ros.send_nav_goal = lambda *a: sent.append(a)
+    pl.go_btn.click()
+    check("Go sends a goal with the saved heading", sent == [(1.0, 2.0, 0.5)], f"{sent}")
+    pl.set_map("warehouse")
+    check("hidden on another map", pl.list.count() == 0 and len(w.p_map.view._place_labels) == 0)
+    pl.set_map("")
+    check("all shown when the map is unknown", pl.list.count() == 1)
+    pl.list.setCurrentRow(0)
+    n = len(w.p_mission.cur.waypoints)
+    pl.mis_btn.click()
+    check("added to the mission with its name", len(w.p_mission.cur.waypoints) == n + 1
+          and w.p_mission.cur.waypoints[-1].name == "Charger")
+    pl.rename_selected("Dock")
+    check("renamed", PlaceStore().places[-1].name == "Dock", PlaceStore().places[-1].name)
+    pl.list.setCurrentRow(0)
+    pl.delete_selected()
+    check("deleted", pl.list.count() == 0 and not PlaceStore().places)
+
+    print("\n[last position]")
+    prof = w.profiles.active()
+    w.ros.set_profile(prof)
+    nav = {"state": "running", "args": {"mode": "map", "map": "office"}}
+    w._on_launcher_events({"stacks": {"nav": nav}})
+    check("nothing remembered yet", w.last_pose() is None and w.p_map.last_pose_btn.isHidden())
+    t = prof.topics
+    w.tf.pose_xyyaw = lambda a, b: (0.0, 0.0, 0.0)    # localized, launch default
+    w._odom_v = 0.0
+    w._track_pose((0.0, 0.0, 0.0))
+    check("the launch default is not stored", w.last_pose() is None)
+    w._odom_v = 0.3
+    w._pose_saved_t = 0.0
+    w._track_pose((3.0, 4.0, 1.0))
+    check("stored while driving", w.last_pose() == (3.0, 4.0, 1.0), f"{w.last_pose()}")
+    w._track_pose((3.1, 4.0, 1.0))
+    check("not on every tick", w.last_pose() == (3.0, 4.0, 1.0))
+    w._odom_v = 0.0
+    w._track_pose((3.2, 4.0, 1.0))
+    check("stored once stopped", w.last_pose() == (3.2, 4.0, 1.0), f"{w.last_pose()}")
+    del w.tf.pose_xyyaw
+    w._on_launcher_events({"stacks": {"nav": nav}})
+    check("button offers it", not w.p_map.last_pose_btn.isHidden() and "3.2" in w.p_map.last_pose_btn.text())
+    poses = []
+    w.ros.publish_initial_pose = lambda *a: poses.append(a)
+    w.p_map.last_pose_btn.click()
+    check("one click sets it", poses == [(3.2, 4.0, 1.0)], f"{poses}")
+    w._on_launcher_events({"stacks": {"nav": {**nav, "args": {"mode": "map", "map": "other"}}}})
+    check("per map", w.last_pose() is None and w.p_map.last_pose_btn.isHidden())
+    w._on_launcher_events({"stacks": {"nav": {"state": "running", "args": {"mode": "slam"}}}})
+    check("not in SLAM mode", w.last_pose() is None)
+    w._on_launcher_events({"stacks": {"nav": nav}})
+    check("kept in the settings", load_settings()["last_pose"][f"{prof.id}/office"][:2] == [3.2, 4.0])
+    w._on_launcher_events({"stacks": {"nav": {"state": "stopped"}}})
 
     print("\n[layout is kept]")
     w.apply_layout("monitor"); pump()

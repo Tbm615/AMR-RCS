@@ -229,6 +229,11 @@ class RobotPanel(QWidget):
         self.goto_map = QPushButton("Open 2D Map")
         self.goto_map.clicked.connect(lambda: self.open_page.emit("map"))
         self.nav.row.insertWidget(3, self.goto_map)
+        self.last_pose_btn = QPushButton("Use last position")
+        self.last_pose_btn.setToolTip("Set the initial pose to where the robot last was on this map, "
+                                      "if it has not been moved since")
+        self.last_pose_btn.setVisible(False)
+        self.nav.row.insertWidget(4, self.last_pose_btn)
         col.addWidget(self.nav)
 
         save = QGroupBox("3 · Save the map")

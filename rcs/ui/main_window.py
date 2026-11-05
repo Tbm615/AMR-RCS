@@ -16,6 +16,7 @@ from .. import APP_NAME, __version__
 from ..core.clearance import compute_clearance
 from ..core.events import EventLog
 from ..core.mission import MissionStore
+from ..core.places import PlaceStore
 from ..core.profile import ProfileStore, RobotProfile, load_settings, save_settings
 from ..core.ros_client import RosClient, quat_to_yaw
 from ..core.sound import Sounds
@@ -74,6 +75,7 @@ class MainWindow(QMainWindow):
         self.profiles = ProfileStore()
         self.missions = MissionStore()
         self.events = EventLog()
+        self.place_store = PlaceStore()
         self.settings = load_settings()
         self.sounds = Sounds()
         self.sounds.enabled = bool(self.settings.get("sound", True))
@@ -187,7 +189,7 @@ class MainWindow(QMainWindow):
         self.p_status = StatusPanel(self.ros)
         self.p_teleop = TeleopPanel()
         self.p_map = Map2DPanel()
-        self.p_nav = NavigationPanel()
+        self.p_nav = NavigationPanel(self.place_store)
         self.p_mission = MissionPanel(self.missions)
         self.p_3d = View3DPanel(self.ros.cloud_map)
         self.p_cam = CameraPanel()
@@ -432,6 +434,13 @@ class MainWindow(QMainWindow):
         self.p_map.view.waypoint_requested.connect(self.p_mission.add_waypoint_at)
         self.p_mission.waypoints_changed.connect(self.p_nav.view.set_waypoints)
         self.p_mission.waypoints_changed.connect(self.p_3d.set_waypoints)
+        pl = self.p_nav.places
+        pl.go_requested.connect(self._go_to_place)
+        pl.add_to_mission.connect(lambda p: self.p_mission.add_waypoint_at(p.x, p.y, p.yaw, p.name))
+        pl.changed.connect(self._draw_places)
+        self._draw_places()
+        self.p_map.last_pose_btn.clicked.connect(self._use_last_pose)
+        self.p_robot.last_pose_btn.clicked.connect(self._use_last_pose)
         # the 3D Map can set the same things as the 2D Map
         self.p_3d.goal_requested.connect(self._send_goal)
         self.p_3d.pose_requested.connect(self._set_initial_pose)
@@ -522,6 +531,12 @@ class MainWindow(QMainWindow):
             self._sensor_ok[key] = ok
 
     def _on_launcher_events(self, st: dict) -> None:
+        nav = st.get("stacks", {}).get("nav", {})
+        args = nav.get("args") or {}
+        up = nav.get("state") in ("starting", "running") and args.get("mode") == "map"
+        self._nav_map = str(args.get("map", "")) if up else ""
+        self.p_nav.places.set_map(self._nav_map)
+        self._update_last_pose_buttons()
         names = {"bringup": "Robot base", "nav": "Navigation"}
         seen = self.__dict__.setdefault("_stack_state", {})
         for key, label in names.items():
@@ -545,6 +560,66 @@ class MainWindow(QMainWindow):
     def _set_initial_pose(self, x: float, y: float, yaw: float) -> None:
         self._log("info", "Navigation", f"initial pose set at ({x:.2f}, {y:.2f})")
         self.ros.publish_initial_pose(x, y, yaw)
+        self._store_pose(x, y, yaw)
+
+    # ---- places and the last position ----
+
+    def _draw_places(self) -> None:
+        pts = [(p.x, p.y, p.name) for p in self.place_store.on_map(self.p_nav.places.map_name)]
+        self.p_map.view.set_places(pts)
+        self.p_nav.view.set_places(pts)
+
+    def _go_to_place(self, p) -> None:
+        self._log("info", "Navigation", f"going to {p.name}")
+        self._send_goal(p.x, p.y, p.yaw)
+
+    def _pose_key(self) -> str:
+        prof = self.ros.profile
+        return f"{prof.id}/{self._nav_map}" if prof and self._nav_map else ""
+
+    _nav_map = ""           # saved map Nav2 runs on; "" = none, or SLAM
+
+    def last_pose(self):
+        """(x, y, yaw) where the robot last was on the current saved map."""
+        p = self.settings.get("last_pose", {}).get(self._pose_key())
+        return tuple(p[:3]) if p else None
+
+    def _store_pose(self, x: float, y: float, yaw: float) -> None:
+        key = self._pose_key()
+        if key:
+            self.settings.setdefault("last_pose", {})[key] = [round(x, 3), round(y, 3), round(yaw, 3)]
+            save_settings({"last_pose": self.settings["last_pose"]})
+            self._pose_saved_t = time.monotonic()
+            self._moved = False
+
+    _moved = False
+    _pose_saved_t = 0.0
+
+    def _track_pose(self, pose) -> None:
+        """Keep the last position while driving and once stopped. Not before
+        the robot has moved: right after a start the pose is just the launch
+        default, and storing it would lose the real one."""
+        if not self._pose_key() or not self.ros.profile:
+            return
+        t = self.ros.profile.topics
+        if self.tf.pose_xyyaw(t.map_frame, t.base_frame) is None:
+            return
+        driving = abs(self._odom_v) > 0.02
+        self._moved = self._moved or driving
+        if self._moved and (not driving or time.monotonic() - self._pose_saved_t > 5.0):
+            self._store_pose(*pose)
+
+    def _use_last_pose(self) -> None:
+        pose = self.last_pose()
+        if pose:
+            self._set_initial_pose(*pose)
+
+    def _update_last_pose_buttons(self) -> None:
+        pose = self.last_pose()
+        for b in (self.p_map.last_pose_btn, self.p_robot.last_pose_btn):
+            b.setVisible(pose is not None)
+            if pose:
+                b.setText(f"Use last position ({pose[0]:.1f}, {pose[1]:.1f})")
 
     # ---- ros message handlers (on GUI thread via queued Qt signals) ----
 
@@ -596,6 +671,8 @@ class MainWindow(QMainWindow):
                 v.set_robot_pose(*pose)
             self.p_mission.update_robot_pose(*pose, draw="mission" in self._visible)
             self.p_3d.update_robot_pose(*pose)
+            self.p_nav.places.set_pose(*pose)
+            self._track_pose(pose)
             self.sb_pose.setText(f"pose: x={pose[0]:+.2f} y={pose[1]:+.2f} yaw={pose[2]:+.2f}")
             now = time.monotonic()
             if now - getattr(self, "_progress_t", 0.0) > 0.2:      # 5 Hz is plenty

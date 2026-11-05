@@ -157,6 +157,12 @@ class MapView(pg.PlotWidget):
         self.wp_sel.setZValue(11.5)
         self.addItem(self.wp_sel)
         self._wp_xy: list = []
+        # saved places
+        self.place_dots = pg.ScatterPlotItem(
+            size=11, symbol="d", pen=pg.mkPen("#2dd4bf", width=1.5), brush=pg.mkBrush(45, 212, 191, 90))
+        self.place_dots.setZValue(10)
+        self.addItem(self.place_dots)
+        self._place_labels: list = []
 
         self.robot_body = pg.PlotDataItem(
             pen=pg.mkPen("#5a9df6", width=2), fillLevel=None)
@@ -349,6 +355,25 @@ class MapView(pg.PlotWidget):
             t.setZValue(12)
             self.addItem(t)
             self._wp_labels.append(t)
+
+    def set_places(self, pts: list) -> None:
+        """pts: (x, y, name) tuples."""
+        for t in self._place_labels:
+            self.removeItem(t)
+        self._place_labels = []
+        self.place_dots.setData([float(p[0]) for p in pts], [float(p[1]) for p in pts])
+        for x, y, name in pts:
+            t = pg.TextItem(str(name), color="#2dd4bf", anchor=(-0.15, 0.5), fill=pg.mkBrush(15, 17, 21, 170))
+            t.setPos(float(x), float(y))
+            t.setZValue(10.5)
+            t.setVisible(self.place_dots.isVisible())
+            self.addItem(t)
+            self._place_labels.append(t)
+
+    def show_places(self, on: bool) -> None:
+        self.place_dots.setVisible(on)
+        for t in self._place_labels:
+            t.setVisible(on)
 
     def set_waypoint_selection(self, indices) -> None:
         """Ring the waypoints at these indices (from the last set_waypoints)."""

@@ -360,13 +360,13 @@ class MissionPanel(QWidget):
         self.cur.waypoints.append(wp)
         self._save(); self._refresh_table(); self._emit_wps()
 
-    def add_waypoint_at(self, x: float, y: float, yaw: float = 0.0) -> None:
-        self._on_map_click(x, y, yaw)
+    def add_waypoint_at(self, x: float, y: float, yaw: float = 0.0, name: str = "") -> None:
+        self._on_map_click(x, y, yaw, name)
 
-    def _on_map_click(self, x: float, y: float, yaw: float = 0.0) -> None:
+    def _on_map_click(self, x: float, y: float, yaw: float = 0.0, name: str = "") -> None:
         if not self.cur:
             return
-        wp = Waypoint.new(f"wp{len(self.cur.waypoints)+1}", x, y)
+        wp = Waypoint.new(name or f"wp{len(self.cur.waypoints)+1}", x, y)
         wp.yaw = yaw
         wp.tolerance = self.tol_sb.value()
         wp.dwell = self.dwell_sb.value()
