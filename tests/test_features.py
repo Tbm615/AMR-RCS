@@ -17,6 +17,7 @@ import base64
 import io
 import math
 import os
+import re
 import struct
 import sys
 import time
@@ -211,7 +212,9 @@ def test_goal_arrow() -> None:
     QTest.mouseMove(v.viewport(), px(2.0, -1.0))
     QApplication.processEvents()
     t = v.coord.text()
-    check("coordinates under the mouse", "+2.0" in t and "-1.0" in t and v.coord.isVisible(), t)
+    xy = [float(n) for n in re.findall(r"[+-]\d+\.\d+", t)]   # the mouse sits on a whole pixel
+    check("coordinates under the mouse", len(xy) == 2 and abs(xy[0] - 2.0) < 0.05 and abs(xy[1] + 1.0) < 0.05
+          and v.coord.isVisible(), t)
     v.set_click_mode("measure")
     wps.clear()
     a, b = px(0.0, 0.0), px(3.0, 4.0)

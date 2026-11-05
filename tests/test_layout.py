@@ -240,6 +240,24 @@ def main() -> int:
     w._nav_state = "idle"
     w.on_escape()
     check("no goal: Esc does nothing", calls == [1])
+    # Esc while typing in a waypoint cell only drops the edit
+    w._show("mission"); pump()
+    m = w.p_mission
+    m.add_waypoint_at(1.0, 1.0, 0.0, "cell")
+    pump()
+    cell = next(m.table.item(0, c) for c in range(m.table.columnCount())
+                if m.table.item(0, c) and m.table.item(0, c).flags() & Qt.ItemIsEditable)
+    w._nav_state = "active"
+    m.table.setFocus()
+    m.table.setCurrentItem(cell)
+    m.table.editItem(cell); pump()
+    editor = app.focusWidget()
+    editor.setText("typed")
+    QTest.keyClick(editor, Qt.Key_Escape); pump()
+    check("Esc in a table cell drops the edit, keeps the goal",
+          calls == [1] and m.table.state() != m.table.State.EditingState and cell.text() != "typed",
+          f"{calls} {cell.text()}")
+    w._nav_state = "idle"
     w.ros.cancel_nav_goal = real_cancel
     w.p_map.view.set_click_mode("goal")
 
