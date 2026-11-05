@@ -497,6 +497,47 @@ def test_mission_executor(tmp_path: Path) -> None:
           panel.status_lbl.text())
 
 
+# ---- 4b. Clearance around the footprint ----
+
+def test_clearance() -> None:
+    print("\n[Clearance]")
+    from rcs.core.clearance import compute_clearance
+    from rcs.ui.panels.teleop import STALE_S, TeleopPanel
+    pts = lambda *p: (np.array([a for a, _ in p], np.float32), np.array([b for _, b in p], np.float32))  # noqa: E731
+    hl, hw = 0.45, 0.30
+    lid = (0.4, 0.0, 0.0)           # lidar 0.4 m ahead of base_link, as on the robot
+    c = compute_clearance(*pts((1.05, 0.0)), lid, hl, hw)
+    check("point ahead: gap from the front edge, not the lidar", abs(c.front - 1.0) < 1e-5, f"{c}")
+    check("nothing behind", math.isinf(c.rear))
+    c = compute_clearance(*pts((-1.85, 0.0)), lid, hl, hw)
+    check("point behind", abs(c.rear - 1.0) < 1e-5 and math.isinf(c.front), f"{c}")
+    c = compute_clearance(*pts((-0.4, 1.0)), lid, hl, hw)
+    check("point to the side: nearest only", abs(c.nearest - 0.7) < 1e-5
+          and math.isinf(c.front) and math.isinf(c.rear), f"{c}")
+    c = compute_clearance(*pts((0.35, 0.70)), lid, hl, hw)      # 0.3, 0.4 past the corner
+    check("past a corner: distance to the corner", abs(c.nearest - 0.5) < 1e-5, f"{c}")
+    c = compute_clearance(*pts((-0.4, 0.1)), lid, hl, hw)
+    check("inside the body is zero", c.nearest == 0.0, f"{c}")
+    c = compute_clearance(*pts((1.0, 0.0)), (0.0, 0.0, math.pi), hl, hw)
+    check("a lidar mounted backwards", abs(c.rear - 0.55) < 1e-5 and math.isinf(c.front), f"{c}")
+    c = compute_clearance(np.empty(0, np.float32), np.empty(0, np.float32), lid, hl, hw)
+    check("empty scan is all clear", math.isinf(c.nearest))
+
+    t = TeleopPanel()
+    t.set_clearance(compute_clearance(*pts((0.2, 0.0)), lid, hl, hw))     # 0.15 m
+    check("red under 0.25 m", t.bar_front.color() == "#ff6a6a", t.bar_front.text())
+    t.set_clearance(compute_clearance(*pts((0.55, 0.0)), lid, hl, hw))    # 0.50 m
+    check("amber under 0.80 m", t.bar_front.color() == "#ffb547", t.bar_front.text())
+    t.set_clearance(compute_clearance(*pts((1.55, 0.0)), lid, hl, hw))    # 1.50 m
+    check("green when clear", t.bar_front.color() == "#39d98a" and t.bar_front.text() == "1.50 m",
+          t.bar_front.text())
+    check("nothing there reads as > 2 m", t.bar_rear.text() == "> 2.0 m", t.bar_rear.text())
+    t._clear_t = time.monotonic() - STALE_S - 0.1
+    t._check_clearance_age()
+    check("old scan shows 'no lidar', not a stale distance", t.bar_front.value is None
+          and t.bar_front.text() == "no lidar")
+
+
 # ---- 5b. Waypoint table: multi-select, remove, move, bulk settings ----
 
 def test_mission_multiselect(tmp_path: Path) -> None:
@@ -575,6 +616,7 @@ def main() -> int:
         test_fusion()
         test_camera()
         test_tf()
+        test_clearance()
         test_mission_executor(Path(td))
         test_mission_multiselect(Path(td))
     print(f"\n--- {PASS} passed, {FAIL} failed ---")

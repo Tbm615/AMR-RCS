@@ -262,6 +262,12 @@ go, the app sends zero velocity for 0.3 s and then stops publishing, so it
 does not block Nav2. Like the gamepad, teleop bypasses the CBF safety
 filter: watch the robot while driving.
 
+**Clearance.** The bars show the free distance from the robot's body to the
+nearest lidar point straight ahead (**Front**), straight behind (**Rear**)
+and in any direction (**Nearest**, what matters when turning on the spot):
+green, amber under 0.80 m, red under 0.25 m. *no lidar* means no scan arrived
+for a second. They are a display only: the app does not brake for you.
+
 ---
 
 ## 8. E-STOP

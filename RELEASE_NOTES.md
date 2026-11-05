@@ -15,6 +15,9 @@ The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use
   scene, or 3D only, or 2D layers only. **Layers ▾** switches each one.
 - **Goals, initial pose and waypoints from the 3D Map:** choose them in
   **Mouse**, press on the floor and drag toward the heading.
+- **Clearance bars on Teleop:** free distance ahead, behind and in any
+  direction, from the robot's body (green, amber under 0.80 m, red under
+  0.25 m). Display only.
 - Pages can shrink: a pane too small for its page gets scroll bars instead of
   stretching the window, and the 3D Map's controls wrap onto more lines.
 

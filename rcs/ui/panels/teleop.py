@@ -1,14 +1,68 @@
 """Teleop panel: virtual joystick + keyboard + latched E-stop."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent
+import math
+import time
+
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QKeyEvent, QPainter
 from PySide6.QtWidgets import (
     QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
     QPushButton, QVBoxLayout, QWidget,
 )
 
+from ...core.clearance import SLOW_DISTANCE, STOP_DISTANCE, Clearance
 from ..widgets.joystick import Joystick
+
+STALE_S = 1.0       # no scan for this long: the bars stop claiming anything
+
+
+class _ClearanceBar(QWidget):
+    """Horizontal bar: full when clear, empty at the robot; green, amber, red."""
+
+    SPAN = 2.0      # m shown by a full bar
+
+    def __init__(self, label: str, parent=None):
+        super().__init__(parent)
+        self.label = label
+        self.value = None       # metres, math.inf = clear, None = no data
+        self.setFixedHeight(26)
+
+    def set_value(self, v) -> None:
+        if v != self.value:
+            self.value = v
+            self.update()
+
+    def color(self) -> str:
+        if self.value is None:
+            return "#5b6378"
+        if self.value < STOP_DISTANCE:
+            return "#ff6a6a"
+        return "#ffb547" if self.value < SLOW_DISTANCE else "#39d98a"
+
+    def text(self) -> str:
+        if self.value is None:
+            return "no lidar"
+        return f"> {self.SPAN:.1f} m" if self.value > self.SPAN else f"{self.value:.2f} m"
+
+    def paintEvent(self, _ev) -> None:
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        name_w, val_w = 62, 62
+        bar = QRectF(name_w, h / 2 - 5, max(10, w - name_w - val_w), 10)
+        p.setPen(QColor("#c6cad6"))
+        p.drawText(QRectF(0, 0, name_w, h), Qt.AlignVCenter | Qt.AlignLeft, self.label)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#1b2030"))
+        p.drawRoundedRect(bar, 5, 5)
+        col = QColor(self.color())
+        if self.value is not None:
+            frac = max(0.03, min(1.0, self.value / self.SPAN))
+            p.setBrush(col)
+            p.drawRoundedRect(QRectF(bar.x(), bar.y(), bar.width() * frac, bar.height()), 5, 5)
+        p.setPen(col)
+        p.drawText(QRectF(w - val_w, 0, val_w, h), Qt.AlignVCenter | Qt.AlignRight, self.text())
 
 
 class TeleopPanel(QWidget):
@@ -24,6 +78,7 @@ class TeleopPanel(QWidget):
         self._key_lin = 0.0
         self._key_ang = 0.0
         self._estop = False
+        self._clear_t = 0.0
         self.setFocusPolicy(Qt.StrongFocus)
         self._build()
 
@@ -79,6 +134,21 @@ class TeleopPanel(QWidget):
         f.addRow("Max angular", self.ang)
         side.addWidget(limits)
 
+        cbox = QGroupBox("Clearance from the robot body")
+        cv = QVBoxLayout(cbox)
+        cv.setSpacing(4)
+        self.bar_front = _ClearanceBar("Front")
+        self.bar_rear = _ClearanceBar("Rear")
+        self.bar_near = _ClearanceBar("Nearest")
+        self.bar_near.setToolTip("Closest obstacle in any direction (matters when turning on the spot)")
+        for b in (self.bar_front, self.bar_rear, self.bar_near):
+            cv.addWidget(b)
+        self.clear_note = QLabel("Display only: the app does not brake for you.")
+        self.clear_note.setProperty("muted", True)
+        self.clear_note.setWordWrap(True)
+        cv.addWidget(self.clear_note)
+        side.addWidget(cbox)
+
         kb = QGroupBox("Keyboard")
         kg = QGridLayout(kb)
         kg.setHorizontalSpacing(12)
@@ -110,6 +180,20 @@ class TeleopPanel(QWidget):
         side.addStretch(1)
 
         root.addWidget(side_w)
+
+    # ---- clearance ----
+
+    def set_clearance(self, c: Clearance) -> None:
+        self._clear_t = time.monotonic()
+        self.bar_front.set_value(c.front)
+        self.bar_rear.set_value(c.rear)
+        self.bar_near.set_value(c.nearest)
+
+    def _check_clearance_age(self) -> None:
+        if self._clear_t and time.monotonic() - self._clear_t > STALE_S:
+            self._clear_t = 0.0
+            for b in (self.bar_front, self.bar_rear, self.bar_near):
+                b.set_value(None)
 
     # ---- input handlers ----
 
@@ -164,6 +248,7 @@ class TeleopPanel(QWidget):
     _STOP_TICKS = 6
 
     def _tick(self) -> None:
+        self._check_clearance_age()
         if self._estop:
             lin, ang = 0.0, 0.0
             active = True               # E-stop keeps streaming zeros

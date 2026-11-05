@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__
+from ..core.clearance import compute_clearance
 from ..core.mission import MissionStore
 from ..core.profile import ProfileStore, RobotProfile, load_settings, save_settings
 from ..core.ros_client import RosClient, quat_to_yaw
@@ -455,6 +456,18 @@ class MainWindow(QMainWindow):
                     v.set_scan(self._scan_msg, self._laser_x, self._laser_y, self._laser_yaw)
             if "3d" in self._visible:
                 self.p_3d.set_scan(self._scan_msg, self._laser_x, self._laser_y, self._laser_yaw)
+            if "teleop" in self._visible:
+                self._update_clearance()
+
+    def _update_clearance(self) -> None:
+        prof = self.ros.profile
+        xy = self._scan_msg.get("_xy")
+        if prof is None or xy is None:
+            return
+        t, lim = prof.topics, prof.limits
+        laser = self.tf.pose_xyyaw(t.base_frame, t.laser_frame) or (lim.laser_offset_x, 0.0, 0.0)
+        self.p_teleop.set_clearance(compute_clearance(
+            xy[0], xy[1], laser, lim.footprint_half_length, lim.footprint_half_width))
 
     def _on_scan(self, m: dict) -> None:
         self._scan_msg = m
