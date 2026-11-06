@@ -8,8 +8,8 @@ from __future__ import annotations
 from typing import Optional
 
 NO_DEPTH_USB = ("The robot sees the color camera but not its depth sensor on USB, so the camera "
-                "driver cannot start. Reboot the robot. If it keeps happening, check the camera's "
-                "USB cable and its power.")
+                "driver cannot start. Unplug the camera and plug it back in: rebooting rarely helps. "
+                "If it keeps happening, connect it through a USB 2.0 cable or another USB port.")
 NO_USB = "The robot does not see the camera on USB. Check its cable, then reboot the robot."
 
 

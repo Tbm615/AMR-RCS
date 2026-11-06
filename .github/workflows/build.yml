@@ -61,6 +61,9 @@ jobs:
       - name: Why there is no camera picture, 3D map without a map frame
         run: python tests/test_camera_status.py
 
+      - name: Battery frames, staying connected over a bad link, Battery page
+        run: python tests/test_battery.py
+
       - name: Responsiveness, reconnect and 3D map under robot-sized traffic
         # shared CI runners are slower than an operator PC: allow longer stalls
         env:

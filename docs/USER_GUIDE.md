@@ -527,6 +527,22 @@ page, and the newest event also shows for a few seconds at the bottom left.
 The last 2000 events of each robot are kept in its `events.csv`, so they are
 still there after a restart.
 
+### Battery
+
+The robot reads its JK-BMS over Bluetooth and sends the values to the app, so
+you can watch the battery from anywhere on the network. The status bar shows the
+charge; the **Battery** page shows voltage, current, temperatures, every cell and
+how the link is doing. Numbers from a lost link stay on the page in grey with
+their age. Events get a warning at 20% and an error at 10%.
+
+The robot connects by itself and keeps trying for as long as it takes. The BMS
+accepts one connection at a time: while a phone is connected to it the robot
+cannot get in, and once the robot is in, the phone cannot. The app only reads;
+nothing it does can change a setting of the BMS.
+
+If the page says the robot's Bluetooth hears no device at all, check its antenna,
+or fit a USB Bluetooth adapter near the battery (`robot/README.md`).
+
 ---
 
 ## 13. Several robots
@@ -639,8 +655,10 @@ status line. Most often:
 - *The robot sees the color camera but not its depth sensor on USB.* The depth
   half of the Astra+ sometimes does not come up when the robot boots, and the
   driver then waits without an error while Robot base still shows *running*.
-  Reboot the robot. If it happens often, check the camera's USB cable and its
-  power.
+  Unplug the camera and plug it back in: software cannot do this for you, the
+  robot's USB ports stay powered, and rebooting rarely helps. It goes wrong when
+  the camera tries USB 3 over a bad link, so if it keeps happening connect it
+  through a USB 2.0 cable (the camera runs at USB 2 speed anyway) or another port.
 - *The camera is off.* Start Robot base.
 
 3D Map works with Robot base alone, in odometry, and starts again when Nav2 or

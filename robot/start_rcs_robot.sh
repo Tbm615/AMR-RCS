@@ -4,6 +4,7 @@
 # Runs, each restarted if it exits:
 #   - rosbridge_server on port 9090 (the app connects here)
 #   - rcs_launcher.py (lets the app start/stop bringup and Nav2)
+#   - rcs_battery.py (keeps the Bluetooth link to the JK-BMS, see that file)
 # Logs: $RCS_WS/runlog/rosbridge.log, $RCS_WS/runlog/rcs_launcher.log
 export RCS_WS="${RCS_WS:-/home/iop/tbm_test}"
 source /opt/ros/humble/setup.bash
@@ -28,4 +29,5 @@ keep_running() {   # keep_running <log> <command...>
 keep_running "$LOGS/rcs_launcher.log" python3 -u "$HERE/rcs_launcher.py" &
 keep_running "$LOGS/rosbridge.log" \
     ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090 &
+keep_running "$LOGS/rcs_battery.log" python3 -u "$HERE/rcs_battery.py" &
 wait

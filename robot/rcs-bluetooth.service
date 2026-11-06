@@ -1,0 +1,14 @@
+# Bluetooth was soft-blocked on the robot. The battery link needs it on after
+# every boot:  sudo cp rcs-bluetooth.service /etc/systemd/system/
+#              sudo systemctl enable --now rcs-bluetooth.service
+[Unit]
+Description=Keep Bluetooth on for the RCS battery link
+After=bluetooth.service systemd-rfkill.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill unblock bluetooth
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

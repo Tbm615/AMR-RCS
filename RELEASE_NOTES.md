@@ -8,6 +8,23 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### Changes in v0.5.0-beta.5: the battery in the app
+
+- **Battery page** (last in the sidebar) and the charge in the status bar, from
+  anywhere on the network: the robot itself reads the JK-BMS over Bluetooth, so
+  no phone next to it is needed. Charge, voltage, current, temperatures, each
+  cell, cycles. Warnings at 20% and 10%. Old numbers are marked as old.
+- **The robot stays connected** by itself, however weak the signal: it keeps
+  searching and reconnecting, and only ever reads from the BMS. The BMS takes
+  one connection at a time, so a phone connected to it keeps the robot out.
+- Beta: not yet tried on the real BMS, the robot's Bluetooth has not heard it so
+  far. Needs the new files on the robot (`robot/README.md`, Battery). If the
+  layout of your BMS differs, the page says the frames cannot be used instead
+  of showing wrong numbers.
+- **Camera:** when the depth sensor is missing, the app now says to replug the
+  camera. Rebooting rarely helps: it fails when the camera tries USB 3 over a
+  bad link. See Troubleshooting in the user guide.
+
 ### Changes in v0.5.0-beta.4: no more blank Camera and 3D Map without a reason
 
 - **The app says why there is no picture.** The Astra+ depth sensor sometimes

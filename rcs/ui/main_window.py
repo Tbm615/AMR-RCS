@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__
+from ..core.battery import alarm, live
 from ..core.camera_status import camera_problem, usb_problem
 from ..core.clearance import compute_clearance
 from ..core.events import EventLog
@@ -27,6 +28,7 @@ from ..core.profile import ProfileStore, RobotProfile, load_settings, save_setti
 from ..core.robot_data import RobotState, migrate_legacy, robot_dir
 from ..core.ros_client import RosClient, quat_to_yaw
 from ..core.sound import Sounds
+from .panels.battery import BatteryPanel
 from .panels.camera import CameraPanel
 from .panels.connection import ConnectionPanel
 from .panels.data import DataPanel, ExportDialog, ImportDialog
@@ -54,6 +56,7 @@ PAGES = [
     ("logs", "Logs"),
     ("events", "Events"),
     ("data", "Data"),
+    ("battery", "Battery"),
 ]
 F_KEY_PAGES = 11        # F1..F11: F12 is E-STOP and must stay E-STOP
 
@@ -222,6 +225,7 @@ class MainWindow(QMainWindow):
         self.p_events = EventsPanel(self.events)
         self.transfer = MapTransfer(self.ros, self.library, self)
         self.p_data = DataPanel(self.library, self.transfer)
+        self.p_battery = BatteryPanel()
 
         self._pages = {
             "conn": self.p_conn,
@@ -236,6 +240,7 @@ class MainWindow(QMainWindow):
             "logs": self.p_logs,
             "events": self.p_events,
             "data": self.p_data,
+            "battery": self.p_battery,
         }
         for key, label in PAGES:
             self.workspace.add_page(key, label, self._pages[key])
@@ -262,6 +267,9 @@ class MainWindow(QMainWindow):
         self.sb_robot = QLabel("—")
         self.sb_pose = QLabel("pose: —")
         self.sb_estop = QLabel("● estop: clear"); self.sb_estop.setStyleSheet("color:#39d98a;")
+        self.sb_battery = QLabel("🔋 —")
+        sb.addPermanentWidget(self.sb_battery)
+        sb.addPermanentWidget(QLabel("   |   "))
         sb.addPermanentWidget(self.sb_robot)
         sb.addPermanentWidget(QLabel("   |   "))
         sb.addPermanentWidget(self.sb_conn)
@@ -612,6 +620,7 @@ class MainWindow(QMainWindow):
 
         self.p_robot.open_page.connect(lambda k: self._show(k))
         self.ros.launcher_state.connect(self.p_data.on_launcher_state)
+        self.ros.battery.connect(self._on_battery)
         self.p_data.export_requested.connect(self._ask_export)
         self.p_data.import_requested.connect(self._ask_import)
         self.transfer.finished.connect(
@@ -733,6 +742,7 @@ class MainWindow(QMainWindow):
         """A sensor that was arriving and stopped is worth an event; one that
         never arrived is not (bringup may simply not be running)."""
         self._update_camera_status()
+        self._update_battery_silence()
         if not self.ros.is_connected():
             return
         for key, label in (("odom", "odometry"), ("scan", "lidar")):
@@ -745,6 +755,42 @@ class MainWindow(QMainWindow):
                 self._log("info" if ok else "warn", "Sensors",
                           f"{label} is back" if ok else f"no {label} for 3 s")
             self._sensor_ok[key] = ok
+
+    _battery = None         # latest report of the robot's battery service
+    _battery_alarm = ""
+
+    def _on_battery(self, b: dict) -> None:
+        self._battery = b
+        self._show_battery()
+
+    def _show_battery(self) -> None:
+        b = self._battery
+        self.p_battery.show_status(b)
+        r = (b or {}).get("reading")
+        if not r:
+            self.sb_battery.setText("🔋 —")
+            self.sb_battery.setStyleSheet("color:#8b93a7;")
+            return
+        fresh = live(b)
+        level = alarm(r["soc"]) if fresh else ""
+        self.sb_battery.setText(f"🔋 {r['soc']}%" + (f" · {r['voltage']:.1f} V" if fresh else " (old)"))
+        self.sb_battery.setStyleSheet("color:" + ("#8b93a7" if not fresh else {
+            "error": "#ff6a6a", "warn": "#ffb547"}.get(level, "#39d98a")) + ";")
+        if fresh and level != self._battery_alarm:
+            # once per step down; a reading back above the limit re-arms it
+            if level and (level == "error" or self._battery_alarm != "error"):
+                self._log(level, "Battery", f"battery at {r['soc']}%")
+            self._battery_alarm = level
+
+    def _update_battery_silence(self) -> None:
+        """The service reports every second: when it stops, say so, and let the
+        numbers on the page age instead of looking live."""
+        st = self.ros.topic_stats.get("battery")
+        if self.ros.is_connected() and (st is None or not st.fresh(5.0)):
+            self._battery = None
+            self.p_battery.show_status(None)
+            self.sb_battery.setText("🔋 —")
+            self.sb_battery.setStyleSheet("color:#8b93a7;")
 
     _launcher: dict = {}    # latest state from the robot's launcher
     _usb_problem = None

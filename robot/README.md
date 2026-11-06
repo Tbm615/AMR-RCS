@@ -57,6 +57,26 @@ See the docstring at the top of `rcs_launcher.py`. `map_preview.py`,
 Maps sent from the app land in `$RCS_WS/maps`. The app can replace a map there
 only if the operator confirms it, and never the one Nav2 is running on.
 
+## Battery
+
+`rcs_battery.py` stays connected to the JK-BMS over Bluetooth and publishes
+`/rcs/battery` for the app's Battery page. It only reads. It reconnects by
+itself forever, and remembers the BMS it found first in `bms.json`: delete that
+file to pair with another one. The BMS takes one connection at a time, so a
+phone connected to it keeps the robot out, and the robot keeps a phone out.
+
+Needs, once:
+
+```bash
+pip3 install --user bleak            # no internet on the robot: copy the wheels over
+sudo cp rcs-bluetooth.service /etc/systemd/system/
+sudo systemctl enable --now rcs-bluetooth.service
+```
+
+If the signal stays weak, fit a USB Bluetooth adapter with an antenna near the
+battery and start with `RCS_BMS_ADAPTER=hci1`. `jk_bms.py` and `bms_link.py` must
+sit next to `rcs_battery.py`.
+
 ## Logs (on the robot)
 
 | File | Content |

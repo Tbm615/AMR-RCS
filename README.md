@@ -39,6 +39,8 @@ WebSocket.
   log and the state the app was left in. Back it all up to one file, or share
   missions, places and maps with other operators. Copy maps between the PC and
   the robot.
+- **Battery:** the robot stays connected to its JK-BMS over Bluetooth, so charge,
+  each cell and temperatures can be watched from anywhere on the network.
 - **Camera** (compressed JPEG), received only while its page is open to save
   Wi-Fi, **Status** (speeds, per-topic rates) and **Logs** (`/rosout`).
 - Stays responsive on Windows: connecting never blocks the window, heavy
@@ -69,6 +71,7 @@ python -m rcs
 | `tests/test_data.py` | nothing (mock rosbridge running the robot's real `map_exchange.py`) | per-robot data, moving from older versions, what comes back after a crash and that nothing moves by itself, packs, hostile packs, copying maps with lost messages |
 | `tests/test_real_launcher.py` | ROS 2 Humble and rosbridge on the PC | the same map copies through the real `rcs_launcher.py` and real rosbridge, in a temporary workspace |
 | `tests/test_camera_status.py` | nothing | saying why there is no picture, 3D map before a map frame exists, static transforms asked for again |
+| `tests/test_battery.py` | nothing (fake Bluetooth backend) | JK-BMS frames, lost pieces, frames that do not add up, staying connected through dropouts and silence, read commands only, Battery page |
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
 | `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
 
