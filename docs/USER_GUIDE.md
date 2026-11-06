@@ -527,6 +527,9 @@ page, and the newest event also shows for a few seconds at the bottom left.
 The last 2000 events of each robot are kept in its `events.csv`, so they are
 still there after a restart.
 
+The robot is drawn from its real CAD model, wheels and camera included. A profile
+whose footprint is a different size gets a plain box of that size instead.
+
 ### Battery
 
 The robot reads its JK-BMS over Bluetooth and sends the values to the app, so

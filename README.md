@@ -39,6 +39,7 @@ WebSocket.
   log and the state the app was left in. Back it all up to one file, or share
   missions, places and maps with other operators. Copy maps between the PC and
   the robot.
+- **The real robot in 3D:** its CAD model on the 3D Map, placed from the URDF.
 - **Battery:** the robot stays connected to its JK-BMS over Bluetooth, so charge,
   each cell and temperatures can be watched from anywhere on the network.
 - **Camera** (compressed JPEG), received only while its page is open to save

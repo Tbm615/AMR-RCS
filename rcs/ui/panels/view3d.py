@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...core import cloud_map as cm
+from ...core import robot_model
 from ..widgets.flow import FlowLayout
 
 try:
@@ -241,6 +242,13 @@ class View3DPanel(QWidget):
         self.box.setSize(2 * self.robot_half_l, 2 * self.robot_half_w, self.robot_h)
         self.box.hide()
         self.view.addItem(self.box)
+        self.model = robot_model.load()
+        self.mesh = None                # the robot's real body, when it is this robot
+        if self.model is not None:
+            md = gl.MeshData(vertexes=self.model[0], faceColors=self.model[1])
+            self.mesh = gl.GLMeshItem(meshdata=md, smooth=False, shader="shaded", glOptions="opaque")
+            self.mesh.hide()
+            self.view.addItem(self.mesh)
         self.heading = gl.GLLinePlotItem(pos=np.zeros((2, 3), np.float32), color=(0.35, 0.62, 0.96, 1),
                                          width=3, antialias=True)
         self.view.addItem(self.heading)
@@ -369,7 +377,7 @@ class View3DPanel(QWidget):
         self.ck_wps = layer("Waypoints")
         self.ck_grid = layer("Grid")
         self.ck_cloud.toggled.connect(self.scatter.setVisible)
-        self.ck_robot.toggled.connect(lambda b: (self.box.setVisible(b and self._robot is not None),
+        self.ck_robot.toggled.connect(lambda b: (self._show_body(b and self._robot is not None),
                                                  self.heading.setVisible(b)))
         self.ck_traj.toggled.connect(self.traj_line.setVisible)
         self.ck_floor.toggled.connect(lambda b: self.floor.setVisible(b) if self.floor else None)
@@ -469,11 +477,21 @@ class View3DPanel(QWidget):
         col[:, 3] = 1.0
         self.scatter.setData(pos=np.ascontiguousarray(xyz), color=col, size=float(self.psize.value()))
 
+    def uses_model(self) -> bool:
+        return self.mesh is not None and robot_model.fits(self.model[0], self.robot_half_l, self.robot_half_w)
+
+    def _show_body(self, on: bool) -> None:
+        model = self.uses_model()
+        self.box.setVisible(on and not model)
+        if self.mesh is not None:
+            self.mesh.setVisible(on and model)
+
     def set_robot_footprint(self, half_l: float, half_w: float) -> None:
         self.robot_half_l = half_l
         self.robot_half_w = half_w
         if HAVE_GL:
             self.box.setSize(2 * half_l, 2 * half_w, self.robot_h)
+            self._show_body(self.ck_robot.isChecked() and self._robot is not None)
 
     def update_robot_pose(self, x: float, y: float, yaw: float) -> None:
         if not HAVE_GL:
@@ -491,7 +509,11 @@ class View3DPanel(QWidget):
             self.box.translate(-self.robot_half_l, -self.robot_half_w, 0)
             self.box.rotate(math.degrees(yaw), 0, 0, 1)
             self.box.translate(x, y, 0)
-            self.box.show()
+            if self.mesh is not None:
+                self.mesh.resetTransform()
+                self.mesh.rotate(math.degrees(yaw), 0, 0, 1)
+                self.mesh.translate(x, y, 0)
+            self._show_body(True)
             reach = self.robot_half_l + 0.4
             self.heading.setData(pos=np.array([[x, y, self.robot_h], [x + reach * math.cos(yaw),
                                                y + reach * math.sin(yaw), self.robot_h]], np.float32))

@@ -15,6 +15,7 @@ import os
 import struct
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,8 +37,8 @@ from rcs.ui.main_window import MainWindow
 app = QApplication(sys.argv)
 PASS = FAIL = 0
 TMP = Path(tempfile.mkdtemp(prefix="rcs_batt_"))
-bms_link.SCAN_S, bms_link.RETRY_S, bms_link.TICK_S = 0.01, 0.01, 0.01
-bms_link.ASK_AGAIN_S, bms_link.STALE_S = 0.05, 0.15
+bms_link.SCAN_S, bms_link.RETRY_S, bms_link.TICK_S = 0.02, 0.02, 0.02
+bms_link.ASK_AGAIN_S, bms_link.STALE_S = 0.1, 0.3
 
 
 def check(name: str, cond, extra: str = "") -> None:
@@ -166,11 +167,13 @@ class Backend:
 
 
 async def until(cond, timeout=3.0) -> bool:
-    for _ in range(int(timeout / 0.005)):
+    # by the clock, not by counting: on Windows a sleep this short returns at once
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
         if cond():
             return True
-        await asyncio.sleep(0.005)
-    return False
+        await asyncio.sleep(0.02)
+    return bool(cond())
 
 
 async def test_link() -> None:
@@ -201,7 +204,7 @@ async def test_link() -> None:
     print("\n[connected but silent, the worst case of a weak link]")
     b.answer = False
     n, w = link.reconnects, len(b.writes)
-    await until(lambda: len(b.writes) > w + 2, 0.5)
+    await until(lambda: len(b.writes) > w, 1.0)
     check("asks again first", len(b.writes) > w and b.writes[w][4] == 0x96)
     check("gives the connection up when it stays silent", await until(lambda: link.reconnects > n))
     check("old reading kept, with its age", link.reading is not None and link.status()["age"] > 0.1)

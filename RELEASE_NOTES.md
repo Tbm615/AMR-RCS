@@ -8,6 +8,24 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### v0.5.0
+
+Everything from the betas below, tested on the real robot with the app (except
+the Battery page: see below), plus:
+
+- **The real robot on the 3D Map**, from its CAD model, in place of a plain box.
+  A robot of another size keeps a box of its own size.
+
+**Update the robot:** copy the whole `robot/` folder over and follow
+`robot/README.md`.
+
+**Known limits**
+- **Battery:** not yet tried on the real BMS: the robot's Bluetooth has not heard
+  it so far. The page says what it can and cannot hear.
+- **Camera:** the depth sensor can fail to come up when the camera tries USB 3
+  over a bad link. Use a USB 2.0 cable, or a port where it works; if it happens,
+  replug the camera (see Troubleshooting in the user guide).
+
 ### Changes in v0.5.0-beta.5: the battery in the app
 
 - **Battery page** (last in the sidebar) and the charge in the status bar, from

@@ -26,6 +26,7 @@ import numpy as np
 from PySide6.QtWidgets import QApplication
 
 from camera_check import camera_usb
+from rcs.core import robot_model
 from rcs.core.camera_status import NO_DEPTH_USB, NO_USB, camera_problem, usb_problem
 from rcs.core.profile import RobotProfile
 from rcs.core.ros_client import RosClient
@@ -166,6 +167,35 @@ def main() -> int:
 
     empty = RosClient(profile=RobotProfile.new("t"))
     check("no TF at all: map, reported as an error by the caller", empty._world_frame() == "map")
+
+    print("\n[robot model on the 3D Map]")
+    tri, col = robot_model.load()
+    pts = tri.reshape(-1, 3)
+    check("loads", len(tri) > 1000 and len(col) == len(tri))
+    check("metres, the size of the robot", 0.8 < np.ptp(pts[:, 0]) < 1.0 and 0.5 < np.ptp(pts[:, 1]) < 0.65)
+    check("stands on the floor", abs(pts[:, 2].min()) < 1e-3)
+    check("light enough for a laptop", len(tri) < 60000, f"{len(tri)}")
+    check("left and right match", abs(pts[:, 1].max() + pts[:, 1].min()) < 0.02)
+    check("fits the default profile", robot_model.fits(tri, 0.45, 0.30))
+    check("not another robot's", not robot_model.fits(tri, 0.25, 0.20))
+    check("missing file is no problem", robot_model.load(Path("/nonexistent.npz")) is None)
+    w2 = MainWindow()
+    w2.show()
+    v = w2.p_3d
+    check("the 3D page has it", v.mesh is not None and v.uses_model())
+    v.set_robot_footprint(0.25, 0.20)
+    check("a smaller robot gets its box", not v.uses_model())
+    v.set_robot_footprint(0.45, 0.30)
+    w2._show("3d")
+    w2.ros.is_connected = lambda: False
+    v.update_robot_pose(1.0, 2.0, 0.5)
+    check("follows the robot", v.mesh.visible() and not v.box.visible())
+    m = np.array(v.mesh.transform().data()).reshape(4, 4).T
+    check("placed at its pose", abs(m[0, 3] - 1.0) < 1e-5 and abs(m[1, 3] - 2.0) < 1e-5
+          and abs(m[1, 0] - np.sin(0.5)) < 1e-5, f"{m[:2, 3]}")
+    v.ck_robot.setChecked(False)
+    check("Robot layer hides it", not v.mesh.visible())
+    w2.close()
 
     print(f"\n--- {PASS} passed, {FAIL} failed ---", flush=True)
     return 1 if FAIL else 0
