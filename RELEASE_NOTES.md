@@ -8,7 +8,7 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
-### Changes in v0.5.0-beta.3: no more blank Camera and 3D Map without a reason
+### Changes in v0.5.0-beta.4: no more blank Camera and 3D Map without a reason
 
 - **The app says why there is no picture.** The Astra+ depth sensor sometimes
   does not come up on USB when the robot boots. The driver then waits silently

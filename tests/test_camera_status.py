@@ -44,7 +44,7 @@ def check(name: str, cond, extra: str = "") -> None:
 
 def usb_tree(*devices) -> Path:
     root = Path(tempfile.mkdtemp(prefix="rcs_sysfs_"))
-    (root / "1-2:1.0").mkdir()                  # an interface: no idVendor
+    (root / "usb1-interface").mkdir()           # as an interface: no idVendor
     for i, (vendor, product) in enumerate(devices):
         d = root / f"1-2.{i}"
         d.mkdir()
