@@ -83,6 +83,7 @@ class FakeLauncher:
         map_files.write_map(self.map_dir, "map_a", {
             "resolution": 0.05, "origin": [-1.0, -2.0, 0.0], "negate": 0, "occupied_thresh": 0.65,
             "free_thresh": 0.25, "mode": "trinary"}, b"P5\n80 60\n255\n" + img.tobytes())
+        self.camera = {"color": True, "depth": True, "publishers": 1}
         self.nav_map = ""           # map Nav2 runs on, refused as a target
         self.drop_next = 0          # answers to lose on the way back
         self.exchange = MapExchange(self._map_paths, self.map_dir, lambda n: n == self.nav_map)
@@ -148,6 +149,7 @@ class FakeLauncher:
         if not self.old:
             st["map_mtimes"] = {m: 1000.0 for m in self.maps}
             st["caps"] = ["map_transfer"]
+            st["camera"] = self.camera
         return {"op": "publish", "topic": "/rcs/launcher/state", "msg": {"data": json.dumps(st)}}
 
 

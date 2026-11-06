@@ -631,6 +631,21 @@ rcs --host 192.168.10.10:9090 --autoconnect
 
 ## 16. Troubleshooting
 
+**No picture on Camera or 3D Map**
+
+The Camera page says why in amber above the picture; 3D Map says it in its
+status line. Most often:
+
+- *The robot sees the color camera but not its depth sensor on USB.* The depth
+  half of the Astra+ sometimes does not come up when the robot boots, and the
+  driver then waits without an error while Robot base still shows *running*.
+  Reboot the robot. If it happens often, check the camera's USB cable and its
+  power.
+- *The camera is off.* Start Robot base.
+
+3D Map works with Robot base alone, in odometry, and starts again when Nav2 or
+SLAM brings a map.
+
 **Cannot connect / keeps reconnecting**
 - Is rosbridge running on the robot? From the operator PC,
   `curl -i http://<robot-ip>:9090` should answer (any HTTP reply, e.g.

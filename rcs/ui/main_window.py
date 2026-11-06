@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__
+from ..core.camera_status import camera_problem, usb_problem
 from ..core.clearance import compute_clearance
 from ..core.events import EventLog
 from ..core.map_transfer import MapTransfer
@@ -699,6 +700,7 @@ class MainWindow(QMainWindow):
         self.p_status.set_connected(False)
         self.p_robot.set_connected(False)
         self.p_data.set_connected(False)
+        self._launcher = {}
         active = self.profiles.active()
         if active and not self.ros._want_connected:     # another robot was selected meanwhile
             self._switch_robot(active)
@@ -730,6 +732,7 @@ class MainWindow(QMainWindow):
     def _check_sensors(self) -> None:
         """A sensor that was arriving and stopped is worth an event; one that
         never arrived is not (bringup may simply not be running)."""
+        self._update_camera_status()
         if not self.ros.is_connected():
             return
         for key, label in (("odom", "odometry"), ("scan", "lidar")):
@@ -743,7 +746,29 @@ class MainWindow(QMainWindow):
                           f"{label} is back" if ok else f"no {label} for 3 s")
             self._sensor_ok[key] = ok
 
+    _launcher: dict = {}    # latest state from the robot's launcher
+    _usb_problem = None
+
+    def _update_camera_status(self) -> None:
+        """Say why there is no picture, on the pages that would show one."""
+        connected = self.ros.is_connected()
+        st = self._launcher if connected else {}
+        usb = usb_problem(st)
+        self.p_robot.set_camera_problem(usb)
+        if usb != self._usb_problem:
+            self._usb_problem = usb
+            if usb:
+                self._log("warn", "Sensors", usb)
+        stats = self.ros.topic_stats
+        frames = any(k in stats and stats[k].fresh(3.0) for k in ("image", "depth", "cloud"))
+        prof = self.ros.profile
+        topic = prof.topics.camera_image if prof else "the camera topic"
+        text = camera_problem(connected, st, frames, topic)
+        self.p_cam.set_problem(text)
+        self.p_3d.camera_problem = text or ""
+
     def _on_launcher_events(self, st: dict) -> None:
+        self._launcher = st
         nav = st.get("stacks", {}).get("nav", {})
         args = nav.get("args") or {}
         up = nav.get("state") in ("starting", "running") and args.get("mode") == "map"

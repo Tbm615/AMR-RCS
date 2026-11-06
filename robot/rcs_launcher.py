@@ -16,6 +16,7 @@ to it through two std_msgs/String topics carrying JSON:
   /rcs/launcher/state  robot -> app, 1 Hz and on every change
       {"version": 1, "stacks": {"bringup": {...}, "nav": {...}},
        "maps": [...], "map_mtimes": {name: mtime}, "caps": ["map_transfer"],
+       "camera": {"color": bool, "depth": bool, "publishers": n},
        "result": {"id", "ok", "msg"}}
 
   /rcs/launcher/preview  robot -> app, answer to map_preview
@@ -49,6 +50,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
+from camera_check import camera_usb
 from map_exchange import MapExchange
 from map_preview import map_preview
 
@@ -288,7 +290,8 @@ class Launcher(Node):
         maps = _maps()
         msg = {"version": 1, "time": time.time(), "stacks": stacks,
                "maps": sorted(maps), "map_mtimes": {k: _mtime(v) for k, v in maps.items()},
-               "caps": ["map_transfer"], "busy": self.busy, "result": self.result}
+               "caps": ["map_transfer"], "busy": self.busy, "result": self.result,
+               "camera": {**camera_usb(), "publishers": self.count_publishers("/camera/depth/image_raw")}}
         self.pub.publish(String(data=json.dumps(msg)))
 
     # -- commands --

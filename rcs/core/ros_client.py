@@ -220,6 +220,9 @@ class RosClient(QObject):
         self._decoder = _Decoder()
         self._decoder.start()
         self._want_connected = False
+        self.cloud_world = ""           # frame the 3D map is in, see _world_frame
+        self._static_tf_t = -1e9        # last time /tf_static was asked for again
+        self._base_state = ""           # bringup state last seen from the launcher
         self._connect_hint = QTimer(self)
         self._connect_hint.setSingleShot(True)
         self._connect_hint.timeout.connect(self._hint_not_connected)
@@ -415,6 +418,28 @@ class RosClient(QObject):
                                 self._on_nav_status)
             self._sync_streams()
 
+    STATIC_TF_RETRY_S = 5.0
+
+    def refresh_static_tf(self) -> None:
+        """Ask for /tf_static again. Static transforms are sent once. Subscribed
+        before bringup starts, rosbridge has no latched publisher to copy, so it
+        subscribes volatile and whatever goes out before the two match is gone:
+        the URDF's frames went missing on some starts, cutting the camera and
+        lidar off from the robot. Subscribing now that the publishers
+        exist gets it all again."""
+        now = time.monotonic()
+        if now - self._static_tf_t < self.STATIC_TF_RETRY_S or not self._ros:
+            return
+        self._static_tf_t = now
+        with self._topic_lock:
+            sub = self._subs.pop("/tf_static", None)
+            if sub is not None:
+                try:
+                    sub.unsubscribe()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage", self._on_tf)
+
     def _on_tf(self, m: dict) -> None:              # network thread; cheap
         self._mark("tf")
         self.tf.ingest(m)
@@ -451,6 +476,20 @@ class RosClient(QObject):
     def _map_frame(self) -> str:
         return self.profile.topics.map_frame if self.profile else "map"
 
+    def _world_frame(self) -> str:
+        """The frame the 3D map is built in: map, or odom while there is none
+        (bringup alone), so that it works without Nav2 or SLAM. Once a map
+        exists it stays map: a lookup that fails for a moment must not switch.
+        The two do not line up, so changing starts the 3D map again."""
+        mf = self._map_frame()
+        odom = self.profile.topics.odom_frame if self.profile else "odom"
+        world = mf if self.tf.has_frame(mf) or not self.tf.has_frame(odom) else odom
+        if world != self.cloud_world:
+            if self.cloud_world:
+                self.cloud_map.clear()
+            self.cloud_world = world
+        return world
+
     def _dec_depth(self, m: dict) -> None:
         """RGB-D frame -> points in the map frame -> 3D map."""
         info = self._depth_info
@@ -466,10 +505,11 @@ class RosClient(QObject):
         hdr = m.get("header", {})
         stamp = stamp_sec(hdr)
         frame = (hdr.get("frame_id") or info.get("header", {}).get("frame_id") or "").lstrip("/")
-        tf = self.tf.matrix(self._map_frame(), frame, stamp)
+        world = self._world_frame()
+        tf = self.tf.matrix(world, frame, stamp)
         if tf is None:
-            self._post("cloud_updated", {"error": f"no TF from {self._map_frame()} to {frame or '?'}"},
-                       coalesce=True)
+            self.refresh_static_tf()
+            self._post("cloud_updated", {"error": f"no TF from {world} to {frame or '?'}"}, coalesce=True)
             return
         color = None
         if self._color_ring:
@@ -497,10 +537,11 @@ class RosClient(QObject):
             self._post("cloud_updated", {"points": len(self.cloud_map), "frame_points": len(xyz),
                                          "frame": frame, "replaced": True}, coalesce=True)
             return
-        tf = self.tf.matrix(self._map_frame(), frame, stamp_sec(hdr))
+        world = self._world_frame()
+        tf = self.tf.matrix(world, frame, stamp_sec(hdr))
         if tf is None:
-            self._post("cloud_updated", {"error": f"no TF from {self._map_frame()} to {frame or '?'}"},
-                       coalesce=True)
+            self.refresh_static_tf()
+            self._post("cloud_updated", {"error": f"no TF from {world} to {frame or '?'}"}, coalesce=True)
             return
         d = np.linalg.norm(xyz, axis=1)
         keep = d < self.map3d_range
@@ -511,6 +552,7 @@ class RosClient(QObject):
         self.map3d_frames += 1
         self._post("cloud_updated", {"points": len(self.cloud_map), "frame_points": len(xyz),
                                      "added": added, "frame": frame, "colored": rgb is not None,
+                                     "world": self.cloud_world,
                                      "full": self.cloud_map.full,
                                      "sensor": tuple(float(v) for v in tf[:3, 3])}, coalesce=True)
 
@@ -523,6 +565,10 @@ class RosClient(QObject):
             return
         if isinstance(st, dict):
             self._mark("launcher")
+            base = st.get("stacks", {}).get("bringup", {}).get("state", "")
+            if base == "running" and self._base_state != "running":
+                self.refresh_static_tf()
+            self._base_state = base
             self._post("launcher_state", st, coalesce=True)
 
     def _on_map_preview(self, m: dict) -> None:

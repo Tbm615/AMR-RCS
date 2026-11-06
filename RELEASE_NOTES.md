@@ -8,6 +8,20 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### Changes in v0.5.0-beta.3: no more blank Camera and 3D Map without a reason
+
+- **The app says why there is no picture.** The Astra+ depth sensor sometimes
+  does not come up on USB when the robot boots. The driver then waits silently
+  and Robot base still shows *running*, so the Camera and 3D Map pages stayed
+  empty with no explanation. Camera, 3D Map and Robot programs now say so, and
+  it is logged in Events. Needs the new `rcs_launcher.py` and `camera_check.py`
+  on the robot.
+- **Fixed: 3D Map empty on some starts.** Connecting before Robot base
+  started could lose the robot's static transforms, cutting the camera off from
+  the robot. The app now asks for them again.
+- **3D Map works with Robot base alone**, in odometry. It starts again when Nav2
+  or SLAM brings a map.
+
 ### Changes in v0.5.0-beta.2: each robot keeps its own data, share it with others
 
 - **Each robot has its own missions, places and event log** on this PC, and

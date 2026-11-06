@@ -52,7 +52,7 @@ Protocol (JSON in `std_msgs/String`): commands on `/rcs/launcher/cmd`, state
 on `/rcs/launcher/state` (1 Hz and on every change, transient local), map
 previews on `/rcs/launcher/preview`, map copies on `/rcs/launcher/map_data`.
 See the docstring at the top of `rcs_launcher.py`. `map_preview.py`,
-`map_exchange.py` and `map_files.py` must sit next to it.
+`map_exchange.py`, `map_files.py` and `camera_check.py` must sit next to it.
 
 Maps sent from the app land in `$RCS_WS/maps`. The app can replace a map there
 only if the operator confirms it, and never the one Nav2 is running on.

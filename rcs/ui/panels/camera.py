@@ -15,8 +15,13 @@ class CameraPanel(QWidget):
         self.image_lbl.setMinimumSize(240, 180)
         self.image_lbl.setStyleSheet("background:#000; color:#5b6378;")
         self.hz_lbl = QLabel("—"); self.hz_lbl.setProperty("muted", True)
+        self.problem_lbl = QLabel("")
+        self.problem_lbl.setWordWrap(True)
+        self.problem_lbl.setStyleSheet("color:#ffb547;")
+        self.problem_lbl.hide()
         v = QVBoxLayout(self)
         v.setContentsMargins(16, 16, 16, 16)
+        v.addWidget(self.problem_lbl)
         v.addWidget(self.image_lbl, 1)
         h = QHBoxLayout(); h.addWidget(QLabel("Topic rate:")); h.addWidget(self.hz_lbl); h.addStretch(1)
         v.addLayout(h)
@@ -33,6 +38,11 @@ class CameraPanel(QWidget):
         if pm.loadFromData(QByteArray(data), "JPG"):
             self._last_pix = pm
             self._render()
+
+    def set_problem(self, text) -> None:
+        """Why there is no picture; None while frames arrive."""
+        self.problem_lbl.setText(text or "")
+        self.problem_lbl.setVisible(bool(text))
 
     def set_rate(self, hz: float) -> None:
         self.hz_lbl.setText(f"{hz:.1f} Hz" if hz > 0.1 else "—")

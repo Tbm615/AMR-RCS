@@ -205,6 +205,11 @@ class RobotPanel(QWidget):
             "needs it. Stopping it disables the motors and also stops navigation.")
         self.base.start_btn.clicked.connect(lambda: self._send("start", stack="bringup"))
         self.base.stop_btn.clicked.connect(self._stop_base)
+        self.cam_lbl = QLabel("")
+        self.cam_lbl.setWordWrap(True)
+        self.cam_lbl.setStyleSheet(f"color:{AMBER};")
+        self.cam_lbl.hide()
+        self.base.extra.addWidget(self.cam_lbl)
         col.addWidget(self.base)
 
         self.nav = _StackBox(
@@ -271,6 +276,10 @@ class RobotPanel(QWidget):
         """What is selected, for the robot's saved state."""
         return {"mode": "map" if self.rb_map.isChecked() else "slam",
                 "map": self._want_map or self.map_combo.currentText()}
+
+    def set_camera_problem(self, text) -> None:
+        self.cam_lbl.setText(text or "")
+        self.cam_lbl.setVisible(bool(text))
 
     def set_choice(self, mode: str, map_name: str) -> None:
         """Select only: nothing starts. The list of maps may not be here yet."""

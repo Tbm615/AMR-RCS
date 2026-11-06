@@ -110,6 +110,10 @@ class TFCache:
             return None
         return [self._edge_at((chain[i], chain[i - 1]), stamp) for i in range(len(chain) - 1, 0, -1)]
 
+    def has_frame(self, frame: str) -> bool:
+        with self._lock:
+            return frame in self._parent_of or frame in self._parent_of.values()
+
     def matrix(self, target: str, source: str, stamp: Optional[float] = None) -> Optional[np.ndarray]:
         """4x4 homogeneous transform taking points in `source` into `target`,
         at time `stamp` (seconds, robot clock) if given, else the latest."""

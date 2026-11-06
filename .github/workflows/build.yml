@@ -58,6 +58,9 @@ jobs:
       - name: Per-robot data, packs, copying maps to and from the robot
         run: python tests/test_data.py
 
+      - name: Why there is no camera picture, 3D map without a map frame
+        run: python tests/test_camera_status.py
+
       - name: Responsiveness, reconnect and 3D map under robot-sized traffic
         # shared CI runners are slower than an operator PC: allow longer stalls
         env:

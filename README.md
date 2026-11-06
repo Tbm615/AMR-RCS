@@ -68,6 +68,7 @@ python -m rcs
 | `tests/test_stress.py` | nothing (mock rosbridge `--heavy`: 1000×1000 map and costmap, 4995-point scans, synthetic RGB-D camera with 0.3 s latency) | GUI never stalls > 0.5 s; 3D map walls land within cm of the true walls while the robot turns, colors right; PLY save/open; reconnect after rosbridge dies; unreachable host does not block (24 checks) |
 | `tests/test_data.py` | nothing (mock rosbridge running the robot's real `map_exchange.py`) | per-robot data, moving from older versions, what comes back after a crash and that nothing moves by itself, packs, hostile packs, copying maps with lost messages |
 | `tests/test_real_launcher.py` | ROS 2 Humble and rosbridge on the PC | the same map copies through the real `rcs_launcher.py` and real rosbridge, in a temporary workspace |
+| `tests/test_camera_status.py` | nothing | saying why there is no picture, 3D map before a map frame exists, static transforms asked for again |
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
 | `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
 

@@ -202,6 +202,7 @@ class View3DPanel(QWidget):
         self._fps_t: list = []
         self._rec_since = time.monotonic()
         self.source_hint = ""           # set by the main window: topics being recorded
+        self.camera_problem = ""        # set by the main window: why no frames arrive
         self.robot_half_l, self.robot_half_w, self.robot_h = 0.45, 0.30, 0.35
 
         v = QVBoxLayout(self)
@@ -432,12 +433,16 @@ class View3DPanel(QWidget):
             self.traj_line.setData(pos=np.asarray(self._traj, np.float32))
         st = self._last_stats
         n = len(self.cloud_map)
-        if "error" in st:
+        if self.camera_problem and self.rec_btn.isChecked():
+            msg = f"⚠ {self.camera_problem}"
+        elif "error" in st:
             msg = f"⚠ {st['error']}"
         elif self.rec_btn.isChecked():
             hz = (len(self._fps_t) - 1) / max(1e-3, self._fps_t[-1] - self._fps_t[0]) if len(self._fps_t) > 1 else 0
             if hz > 0:
                 msg = f"recording · {hz:.1f} frames/s"
+                if st.get("world") == "odom":
+                    msg += " · no map yet: odometry only, starts again when Nav2 or SLAM runs"
             elif time.monotonic() - self._rec_since > 8:
                 msg = (f"⚠ no camera frames from {self.source_hint or 'the robot'}. Is the camera "
                        "running (bringup) and, for depth images, image_transport_plugins installed "
