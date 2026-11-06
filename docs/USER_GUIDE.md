@@ -21,8 +21,9 @@ through `rosbridge_server`, which runs on the robot.
 - [11. Missions, checkpoints and loop routes](#11-missions-checkpoints-and-loop-routes)
 - [12. Status, Camera, 3D Map, Logs and Events](#12-status-camera-3d-map-logs-and-events)
 - [13. Several robots](#13-several-robots)
-- [14. Settings files and advanced options](#14-settings-files-and-advanced-options)
-- [15. Troubleshooting](#15-troubleshooting)
+- [14. Back up, share and copy maps (Data page)](#14-back-up-share-and-copy-maps-data-page)
+- [15. Settings files and advanced options](#15-settings-files-and-advanced-options)
+- [16. Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -523,8 +524,8 @@ looking at a run later.
 With **Sound alerts** on (the default), the PC plays a sound on errors and
 warnings. The sidebar counts new warnings and errors (**Events (2)**) until you open the
 page, and the newest event also shows for a few seconds at the bottom left.
-The last 2000 events are kept in `events.csv` next to your settings, so they
-are still there after a restart.
+The last 2000 events of each robot are kept in its `events.csv`, so they are
+still there after a restart.
 
 ---
 
@@ -536,17 +537,74 @@ Each robot is a profile on the **Connection** page.
    changes**.
 2. To switch robots: select it in the list and click **Connect**.
 
-The app controls **one robot at a time**. Missions are stored per PC, not
-per robot; give them clear names if robots share a site.
+The app controls **one robot at a time**. Each robot has its own missions,
+saved places and event log on this PC, and the app remembers how you left it:
+layout, open mission, saved map or SLAM, last position on each map.
+
+- Selecting a robot in the list opens its data. While connected the app stays
+  on the connected robot, whatever you select; it follows your selection once
+  you disconnect.
+- A robot's layout comes back when you connect to it.
+- Switching to another robot stops a running mission.
+- If the app closed during a mission, the Missions page shows where it was and
+  selects that waypoint. **Nothing starts by itself:** check that the way is
+  clear, then click **Start from selected waypoint**. A looping mission goes on
+  with the lap it was on.
+
+Removing a robot from the list leaves its data on the disk.
+
+**After updating from v0.5.0-beta.1 or older:** your missions and places are
+copied to every robot, because the old list does not say which robot each one
+was for. Delete what does not belong. The old files stay as `*.migrated`.
 
 ---
 
-## 14. Settings files and advanced options
+## 14. Back up, share and copy maps (Data page)
+
+**Back up…** saves everything about the open robot in one `.rcspack` file.
+**Share…** starts with only what is useful to someone else: missions, places
+and the maps they use. Tick or untick what goes in the file, then send it any
+way you like: a shared folder, a USB stick, a chat.
+
+**Import…** shows what is in a file and lets you choose what to take:
+
+- **Add to** the open robot, or **As a new robot** if the file has a robot
+  profile. The new robot appears on the Connection page; nothing else changes.
+- Importing only adds. A mission or place you already have is skipped; one with
+  the same name but different content is added as *name (2)*. A different map
+  with a name already in use is kept as *name_2*, and the missions from the file
+  follow it.
+- Importing into a robot is refused while its mission runs.
+- Speed limits in a file are held to what the Connection page allows. **Check
+  them before driving a robot you imported.**
+
+**Maps.** Maps on this PC are shared by all robots. To give a map to another
+robot: select it under *Maps on the robot*, **Copy to this PC**, connect to the
+other robot, select it under *Maps on this PC*, **Send to robot**. To give it to
+another person, include it when you click **Share…**.
+
+- Sending a map with a name the robot already has asks first, and the map Nav2
+  is running on cannot be replaced.
+- A map works only where it was made. Two robots can use one map, but each still
+  needs its initial pose.
+- Only `.pgm` maps can be copied, which is what **Save map** writes.
+- Needs `rcs_launcher.py`, `map_exchange.py` and `map_files.py` updated on the
+  robot; the page says so otherwise.
+
+**A mission belongs to its map.** It remembers the saved map its first waypoint
+was set on (shown under its name) and will not start while Nav2 runs on another
+one. In SLAM mode, with Nav2 started outside the app, or for a mission made
+before this version, there is no map to compare: check it yourself.
+
+---
+
+## 15. Settings files and advanced options
 
 | | Linux | Windows |
 |---|---|---|
 | Robots | `~/.config/RCS/robots.json` | `%APPDATA%\RCS\robots.json` |
-| Missions | `~/.config/RCS/missions.json` | `%APPDATA%\RCS\missions.json` |
+| One robot's data (missions, places, events, last state) | `~/.config/RCS/robots/<id>/` | `%APPDATA%\RCS\robots\<id>\` |
+| Maps on this PC | `~/.config/RCS/maps/` | `%APPDATA%\RCS\maps\` |
 | App log | `/tmp/rcs.log` | `%TEMP%\rcs.log` |
 
 Some per-robot options are only in `robots.json` (edit while the app is
@@ -571,7 +629,7 @@ rcs --host 192.168.10.10:9090 --autoconnect
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 **Cannot connect / keeps reconnecting**
 - Is rosbridge running on the robot? From the operator PC,

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import QApplication
 from rcs.core.events import EventLog, write_csv
 from rcs.core.places import PlaceStore
 from rcs.core.profile import load_settings
+from rcs.core.robot_data import RobotState
 from rcs.ui import theme
 from rcs.ui.main_window import MainWindow
 
@@ -209,7 +210,7 @@ def main() -> int:
     check("a live event goes on top", pe.table.rowCount() == n + 1 and pe.table.item(0, 2).text() == "a new event")
     csv_path = Path(os.environ["XDG_CONFIG_HOME"]) / "export.csv"
     check("CSV export", write_csv(csv_path, pe.shown()) == n + 1 and "a new event" in csv_path.read_text())
-    log2 = EventLog()
+    log2 = EventLog(w.events.path)
     check("events survive a restart", [e.text for e in log2.events] == texts())
 
     print("\n[keyboard]")
@@ -316,10 +317,10 @@ def main() -> int:
     check("added to the mission with its name", len(w.p_mission.cur.waypoints) == n + 1
           and w.p_mission.cur.waypoints[-1].name == "Charger")
     pl.rename_selected("Dock")
-    check("renamed", PlaceStore().places[-1].name == "Dock", PlaceStore().places[-1].name)
+    check("renamed", PlaceStore(pl.store.path).places[-1].name == "Dock")
     pl.list.setCurrentRow(0)
     pl.delete_selected()
-    check("deleted", pl.list.count() == 0 and not PlaceStore().places)
+    check("deleted", pl.list.count() == 0 and not PlaceStore(pl.store.path).places)
 
     print("\n[last position]")
     prof = w.profiles.active()
@@ -353,7 +354,7 @@ def main() -> int:
     w._on_launcher_events({"stacks": {"nav": {"state": "running", "args": {"mode": "slam"}}}})
     check("not in SLAM mode", w.last_pose() is None)
     w._on_launcher_events({"stacks": {"nav": nav}})
-    check("kept in the settings", load_settings()["last_pose"][f"{prof.id}/office"][:2] == [3.2, 4.0])
+    check("kept with the robot", RobotState(w.robot_state.path).get("last_pose")["office"][:2] == [3.2, 4.0])
     w._on_launcher_events({"stacks": {"nav": {"state": "stopped"}}})
 
     print("\n[layout is kept]")

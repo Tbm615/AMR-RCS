@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import uuid
@@ -28,6 +29,15 @@ MISSIONS_PATH = CONFIG_DIR / "missions.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 
+def atomic_write(path: Path, text: str) -> None:
+    """Replace a file in one step: a crash leaves the old content or the new
+    one, never half of it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def load_settings() -> dict:
     """App-wide UI settings (window layout…); {} if missing or unreadable."""
     try:
@@ -41,9 +51,18 @@ def save_settings(updates: dict) -> None:
     data = load_settings()
     data.update(updates)
     try:
-        SETTINGS_PATH.write_text(json.dumps(data, indent=2))
+        atomic_write(SETTINGS_PATH, json.dumps(data, indent=2))
     except OSError:
         pass
+
+
+def drop_setting(key: str) -> None:
+    data = load_settings()
+    if data.pop(key, None) is not None:
+        try:
+            atomic_write(SETTINGS_PATH, json.dumps(data, indent=2))
+        except OSError:
+            pass
 
 
 @dataclass
@@ -83,6 +102,32 @@ class Limits:
     laser_offset_x: float = 0.40      # m, used only if TF for laser_frame is absent
     cloud_throttle_ms: int = 500      # min interval between depth / PointCloud2 frames
     image_throttle_ms: int = 100      # min interval between camera frames
+
+
+# What a profile from a file may set; the speeds are the Connection page's own
+# bounds. A shared file must not be able to raise a limit past what an operator
+# could type, or switch the stale-command cutoff off.
+LIMIT_RANGES = {
+    "max_linear": (0.05, 2.0),
+    "max_angular": (0.1, 3.0),
+    "teleop_timeout": (0.1, 2.0),
+    "footprint_half_length": (0.05, 5.0),
+    "footprint_half_width": (0.05, 5.0),
+    "laser_offset_x": (-5.0, 5.0),
+    "cloud_throttle_ms": (0, 10000),
+    "image_throttle_ms": (0, 10000),
+}
+
+
+def checked_limits(d: dict) -> Limits:
+    """Limits from an untrusted dict: bad values fall back, others are clamped."""
+    out = Limits()
+    for key, (lo, hi) in LIMIT_RANGES.items():
+        v = d.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+            continue
+        setattr(out, key, type(getattr(out, key))(min(hi, max(lo, v))))
+    return out
 
 
 @dataclass
@@ -159,7 +204,7 @@ class ProfileStore:
             "profiles": [p.to_dict() for p in self.profiles],
             "active_id": self.active_id,
         }
-        self.path.write_text(json.dumps(payload, indent=2))
+        atomic_write(self.path, json.dumps(payload, indent=2))
 
     def active(self) -> Optional[RobotProfile]:
         for p in self.profiles:

@@ -8,7 +8,35 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
-### Changes since v0.5.0-beta.1
+### Changes in v0.5.0-beta.2: each robot keeps its own data, share it with others
+
+- **Each robot has its own missions, places and event log** on this PC, and
+  the app remembers how it was left with each one: layout, open mission, saved
+  map or SLAM, last position on each map. Saved as you go, so a crash loses at
+  most a few seconds. Select a robot to open its data; while connected the app
+  stays on the connected robot.
+- **Nothing restarts by itself.** If the app closed during a mission, it shows
+  the waypoint and lap it was at and selects it; you press *Start from selected
+  waypoint* to go on.
+- **Data page** (new, last in the sidebar): **Back up** a robot's data to one
+  `.rcspack` file, **Share** the missions, places and maps with someone else,
+  **Import** a file into a robot or as a new robot. Importing only adds: nothing
+  you have is replaced, and importing the same file twice adds nothing.
+- **Copy maps between the PC and the robot** on the Data page, so a map built on
+  one robot can go to another. Needs the new `rcs_launcher.py`, `map_exchange.py`
+  and `map_files.py` on the robot (`robot/README.md`); with the old launcher the
+  page says so and everything else works.
+- **A mission now remembers its map** and refuses to start while Nav2 runs on
+  another one: the same coordinates would be somewhere else. Missions made
+  before this version have no map, so they are not checked.
+- A robot profile from a file cannot go past the limits of the Connection page.
+- Fixed: rebuilding the robot list could silently select a different robot.
+
+**On first start** your missions and places are copied to every robot, because
+the old list does not say which robot each one was for: delete what does not
+belong. The old files stay next to the settings as `*.migrated`.
+
+### Changes in earlier betas, since v0.5.0-beta.1
 
 - **Fusion view on the 3D Map:** the 3D map with the 2D map on the floor and
   the live lidar, planned path, costmaps, goal and mission waypoints in one

@@ -55,6 +55,9 @@ jobs:
       - name: Page layout (split, tabs, page windows, presets), fusion, events
         run: python tests/test_layout.py
 
+      - name: Per-robot data, packs, copying maps to and from the robot
+        run: python tests/test_data.py
+
       - name: Responsiveness, reconnect and 3D map under robot-sized traffic
         # shared CI runners are slower than an operator PC: allow longer stalls
         env:

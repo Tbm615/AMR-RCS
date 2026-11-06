@@ -8,20 +8,27 @@ import time
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu,
-    QMessageBox, QPushButton, QStatusBar, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QDialog, QFileDialog, QFrame, QHBoxLayout, QInputDialog, QLabel,
+    QMainWindow, QMenu, QMessageBox, QPushButton, QStatusBar, QVBoxLayout, QWidget,
 )
 
 from .. import APP_NAME, __version__
 from ..core.clearance import compute_clearance
 from ..core.events import EventLog
+from ..core.map_transfer import MapTransfer
+from ..core.maps import MapLibrary
 from ..core.mission import MissionStore
+from ..core.pack import (
+    SUFFIX, ImportResult, export_pack, import_as_new_robot, import_into, merge_layouts, read_pack,
+)
 from ..core.places import PlaceStore
 from ..core.profile import ProfileStore, RobotProfile, load_settings, save_settings
+from ..core.robot_data import RobotState, migrate_legacy, robot_dir
 from ..core.ros_client import RosClient, quat_to_yaw
 from ..core.sound import Sounds
 from .panels.camera import CameraPanel
 from .panels.connection import ConnectionPanel
+from .panels.data import DataPanel, ExportDialog, ImportDialog
 from .panels.events import EventsPanel
 from .panels.logs import LogsPanel
 from .panels.map2d import Map2DPanel
@@ -45,7 +52,9 @@ PAGES = [
     ("cam", "Camera"),
     ("logs", "Logs"),
     ("events", "Events"),
+    ("data", "Data"),
 ]
+F_KEY_PAGES = 11        # F1..F11: F12 is E-STOP and must stay E-STOP
 
 
 class _NavButton(QPushButton):
@@ -73,9 +82,18 @@ class MainWindow(QMainWindow):
         self.resize(1400, 880)
 
         self.profiles = ProfileStore()
-        self.missions = MissionStore()
-        self.events = EventLog()
-        self.place_store = PlaceStore()
+        migrate_legacy(self.profiles)
+        # The robot whose data is open. While connected that is the connected
+        # robot, whatever is selected on the Connection page.
+        active = self.profiles.active()
+        self._data_robot = active.id if active else ""
+        self._layout_robot = self._data_robot    # whose layout is on screen
+        folder = robot_dir(self._data_robot)
+        self.missions = MissionStore(folder / "missions.json")
+        self.events = EventLog(folder / "events.csv")
+        self.place_store = PlaceStore(folder / "places.json")
+        self.robot_state = RobotState(folder / "state.json")
+        self.library = MapLibrary()
         self.settings = load_settings()
         self.sounds = Sounds()
         self.sounds.enabled = bool(self.settings.get("sound", True))
@@ -118,6 +136,11 @@ class MainWindow(QMainWindow):
         self._sensor_timer.setInterval(1000)
         self._sensor_timer.timeout.connect(self._check_sensors)
         self._sensor_timer.start()
+        self._restore_robot_state()
+        self._state_timer = QTimer(self)        # so that a crash loses little
+        self._state_timer.setInterval(5000)
+        self._state_timer.timeout.connect(self._sync_state)
+        self._state_timer.start()
 
     # ---- construct UI ----
 
@@ -147,7 +170,8 @@ class MainWindow(QMainWindow):
         self.btns = {}
         for i, (key, label) in enumerate(PAGES):
             b = _NavButton(label)
-            b.setToolTip(f"F{i + 1} · Click: show here · Ctrl+click: open beside · right-click: more")
+            f_key = f"F{i + 1} · " if i < F_KEY_PAGES else ""
+            b.setToolTip(f"{f_key}Click: show here · Ctrl+click: open beside · right-click: more")
             b.setContextMenuPolicy(Qt.CustomContextMenu)
             b.customContextMenuRequested.connect(lambda _p, k=key: self._page_menu(k))
             self.nav_group.addButton(b)
@@ -195,6 +219,8 @@ class MainWindow(QMainWindow):
         self.p_cam = CameraPanel()
         self.p_logs = LogsPanel()
         self.p_events = EventsPanel(self.events)
+        self.transfer = MapTransfer(self.ros, self.library, self)
+        self.p_data = DataPanel(self.library, self.transfer)
 
         self._pages = {
             "conn": self.p_conn,
@@ -208,6 +234,7 @@ class MainWindow(QMainWindow):
             "cam": self.p_cam,
             "logs": self.p_logs,
             "events": self.p_events,
+            "data": self.p_data,
         }
         for key, label in PAGES:
             self.workspace.add_page(key, label, self._pages[key])
@@ -218,7 +245,7 @@ class MainWindow(QMainWindow):
         for key, btn in self.btns.items():
             btn.clicked.connect(lambda _c=False, k=key, b=btn: self._show(
                 k, "right" if b.take_mods() & Qt.ControlModifier else "replace"))
-        saved = self.settings.get("layout")
+        saved = self.robot_state.get("layout") or self.settings.get("layout")
         if not (saved and self.workspace.restore_layout(saved)):
             self.workspace.apply_preset("single", "conn")
         self.p_events.sound_ck.setChecked(self.sounds.enabled)
@@ -301,7 +328,7 @@ class MainWindow(QMainWindow):
         def key(seq, fn, context=Qt.WindowShortcut):
             QShortcut(QKeySequence(seq), self, fn, context=context)
 
-        for i, (page, _label) in enumerate(PAGES):
+        for i, (page, _label) in enumerate(PAGES[:F_KEY_PAGES]):
             key(f"F{i + 1}", lambda k=page: self._show(k))
         for i, (name, _label) in enumerate(PRESETS):
             key(f"Ctrl+{i + 1}", lambda n=name: self.apply_layout(n))
@@ -356,8 +383,176 @@ class MainWindow(QMainWindow):
             self._render()
 
     def closeEvent(self, ev) -> None:
-        save_settings({"layout": self.workspace.save_layout()})
+        self._sync_state()
+        save_settings({"layout": self.workspace.save_layout()})   # for robots with none of their own
         super().closeEvent(ev)
+
+    # ---- per-robot data ----
+
+    def _data_profile(self):
+        return next((p for p in self.profiles.profiles if p.id == self._data_robot), None)
+
+    def _sync_state(self) -> None:
+        """Note how the app is, in the open robot's state."""
+        cur = self.p_mission.cur
+        now = {"mission": cur.id if cur else "", "run": self.p_mission.run_state(),
+               "nav": self.p_robot.choice()}
+        if self._layout_robot == self._data_robot:
+            now["layout"] = self.workspace.save_layout()
+        self.robot_state.update(**now)
+
+    def _restore_robot_state(self) -> None:
+        """Bring the screens back as they were left. Only that: no mission,
+        goal or program is started from here."""
+        st = self.robot_state
+        nav = st.get("nav")
+        if isinstance(nav, dict):
+            self.p_robot.set_choice(str(nav.get("mode", "map")), str(nav.get("map", "")))
+        if st.get("mission"):
+            self.p_mission.open_mission(str(st.get("mission")))
+        run = st.get("run")
+        text = self.p_mission.show_last_run(run) if isinstance(run, dict) else None
+        if text:
+            self._log("info", "Mission", f"{text} when the app closed. Not restarted")
+        self._update_last_pose_buttons()
+        self._show_data_robot()
+
+    def _show_data_robot(self) -> None:
+        prof = self._data_profile()
+        name = prof.name if prof else "no robot"
+        seen = self.robot_state.get("last_connected")
+        when = time.strftime(" · last connected %Y-%m-%d %H:%M", time.localtime(seen)) if seen else ""
+        self.p_data.set_robot(
+            f"<b>{name}</b> · missions: {len(self.missions.missions)} · "
+            f"places: {len(self.place_store.places)}{when}", str(robot_dir(self._data_robot)))
+
+    def _switch_robot(self, profile: RobotProfile) -> None:
+        """Open another robot's data. A running mission stops first: it would
+        carry on sending that robot's waypoints to the next one."""
+        if profile.id == self._data_robot:
+            return
+        self.p_mission.stop_mission()
+        self._sync_state()
+        self._data_robot = profile.id
+        folder = robot_dir(profile.id)
+        self.missions.use(folder / "missions.json")
+        self.place_store.use(folder / "places.json")
+        self.events.use(folder / "events.csv")
+        self.robot_state = RobotState(folder / "state.json")
+        self._set_unseen(0)
+        self._nav_map = ""
+        self._moved = False
+        self.p_mission.set_map("")
+        self.p_mission.reload()
+        self.p_nav.places.map_name = ""
+        self.p_nav.places.refresh()
+        self._restore_robot_state()
+
+    def _bring_layout(self, profile: RobotProfile) -> None:
+        """A robot's layout comes with connecting to it, not with selecting it
+        in the list: that would pull the Connection page away mid-click."""
+        if profile.id == self._layout_robot:
+            return
+        self._layout_robot = profile.id
+        saved = self.robot_state.get("layout")
+        if saved and self.workspace.restore_layout(saved):
+            self._on_visible_changed()
+
+    # ---- back up, share, import ----
+
+    def _map_refs(self) -> set:
+        refs = {m.map for m in self.missions.missions} | {p.map for p in self.place_store.places}
+        return refs - {""}
+
+    def _ask_export(self, kind: str) -> None:
+        prof = self._data_profile()
+        if prof is None:
+            return
+        names = self.library.names()
+        refs = self._map_refs()
+        dlg = ExportDialog(kind, prof.name, {
+            "missions": len(self.missions.missions), "places": len(self.place_store.places),
+            "layouts": len(self.settings.get("layouts", {})), "events": len(self.events.events),
+        }, names, refs, refs - set(names), self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in prof.name)
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save as", f"{stem}_{time.strftime('%Y%m%d')}{SUFFIX}", f"RCS pack (*{SUFFIX})")
+        if path:
+            self.export_pack_to(path, dlg.items())
+
+    def export_pack_to(self, path: str, items: dict) -> bool:
+        self._sync_state()
+        prof = self._data_profile()
+        try:
+            out = export_pack(
+                path, robot_name=prof.name if prof else "",
+                profile=prof if items.get("profile") else None,
+                missions=self.missions.missions if items.get("missions") else None,
+                places=self.place_store.places if items.get("places") else None,
+                library=self.library, maps=tuple(items.get("maps", ())),
+                layouts=self.settings.get("layouts") if items.get("layouts") else None,
+                state=self.robot_state.data if items.get("state") else None,
+                events_path=self.events.path if items.get("events") else None)
+        except (OSError, ValueError) as e:
+            self.p_data.show_result(False, f"cannot write {path}: {e}")
+            return False
+        self.p_data.show_result(True, f"saved to {out}")
+        self._log("info", "Data", f"exported to {out}")
+        return True
+
+    def _ask_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import", "", f"RCS pack (*{SUFFIX})")
+        if not path:
+            return
+        try:
+            pack = read_pack(path)
+        except (OSError, ValueError) as e:
+            self.p_data.show_result(False, f"cannot read {path}: {e}")
+            return
+        prof = self._data_profile()
+        dlg = ImportDialog(pack, prof.name if prof else "this robot", self)
+        if dlg.exec() == QDialog.Accepted:
+            self.import_pack_from(path, dlg.to_new.isChecked(), dlg.want())
+
+    def import_pack_from(self, path: str, new_robot: bool, want: set):
+        """Returns the ImportResult, or None if nothing was imported."""
+        if not new_robot and self.p_mission._exec_idx >= 0:
+            self.p_data.show_result(False, "stop the mission before importing into this robot")
+            return None
+        try:
+            pack = read_pack(path)
+            if new_robot:
+                if pack.profile is None:
+                    raise ValueError("this file has no robot profile")
+                res = import_as_new_robot(pack, want, self.library, self.profiles)
+            else:
+                res = import_into(pack, want, self.library, self.missions, self.place_store)
+        except (OSError, ValueError) as e:
+            self.p_data.show_result(False, f"cannot import {path}: {e}")
+            return None
+        if "layouts" in want:
+            mine = self.settings.setdefault("layouts", {})
+            merge_layouts(mine, pack, res)
+            save_settings({"layouts": mine})
+        self._after_import(res)
+        return res
+
+    def _after_import(self, res: ImportResult) -> None:
+        if res.robot is not None:
+            self.p_conn.refresh()
+        else:
+            self.p_mission.reload()
+            self.p_nav.places.refresh()
+        self.p_data.refresh_library()
+        self._show_data_robot()
+        missing = sorted(res.map_refs - set(self.library.names()) - set(self.p_data.robot_maps()))
+        text = res.text()
+        if missing:
+            text += f". Still needed: map {', '.join(missing)}, on neither this PC nor the robot"
+        self.p_data.show_result(not missing, text)
+        self._log("warn" if missing else "info", "Data", f"imported: {text}")
 
     def _sync_streams(self) -> None:
         self.ros.set_stream_active("image", "cam" in self._visible)
@@ -415,6 +610,11 @@ class MainWindow(QMainWindow):
         self.p_teleop.event.connect(lambda level, text: self._log(level, "Teleop", text))
 
         self.p_robot.open_page.connect(lambda k: self._show(k))
+        self.ros.launcher_state.connect(self.p_data.on_launcher_state)
+        self.p_data.export_requested.connect(self._ask_export)
+        self.p_data.import_requested.connect(self._ask_import)
+        self.transfer.finished.connect(
+            lambda ok, text: self._log("info" if ok else "warn", "Data", text))
 
         # teleop → ros
         self.p_teleop.cmd_vel.connect(self.ros.publish_cmd_vel)
@@ -450,6 +650,8 @@ class MainWindow(QMainWindow):
 
     def _on_connect(self, profile: RobotProfile) -> None:
         self.profiles.set_active(profile.id)
+        self._switch_robot(profile)
+        self._bring_layout(profile)
         self.ros.set_profile(profile)
         self.ros.connect_robot()
         self.sb_robot.setText(f"{profile.name} ({profile.ws_url})")
@@ -457,6 +659,9 @@ class MainWindow(QMainWindow):
 
     def _on_profile_changed(self, profile: RobotProfile) -> None:
         self._apply_profile_to_panels(profile)
+        if not self.ros._want_connected:    # connected: the pages stay on that robot
+            self._switch_robot(profile)
+        self._show_data_robot()
 
     def _apply_profile_to_panels(self, profile: RobotProfile) -> None:
         self.p_teleop.apply_limits(profile.limits.max_linear, profile.limits.max_angular)
@@ -477,6 +682,9 @@ class MainWindow(QMainWindow):
         self.p_conn.set_connected(True, self.ros.profile.ws_url if self.ros.profile else "")
         self.p_status.set_connected(True)
         self.p_robot.set_connected(True)
+        self.p_data.set_connected(True)
+        self.robot_state.update(last_connected=time.time())
+        self._show_data_robot()
 
     def _on_ros_disconnected(self) -> None:
         self.sb_conn.setText("● offline"); self.sb_conn.setStyleSheet("color:#ff6a6a;")
@@ -490,6 +698,10 @@ class MainWindow(QMainWindow):
         self.p_conn.set_connected(False)
         self.p_status.set_connected(False)
         self.p_robot.set_connected(False)
+        self.p_data.set_connected(False)
+        active = self.profiles.active()
+        if active and not self.ros._want_connected:     # another robot was selected meanwhile
+            self._switch_robot(active)
 
     def _on_ros_error(self, msg: str) -> None:
         self.p_conn.set_connected(False, msg)
@@ -537,6 +749,7 @@ class MainWindow(QMainWindow):
         up = nav.get("state") in ("starting", "running") and args.get("mode") == "map"
         self._nav_map = str(args.get("map", "")) if up else ""
         self.p_nav.places.set_map(self._nav_map)
+        self.p_mission.set_map(self._nav_map)
         self._update_last_pose_buttons()
         names = {"bringup": "Robot base", "nav": "Navigation"}
         seen = self.__dict__.setdefault("_stack_state", {})
@@ -574,22 +787,18 @@ class MainWindow(QMainWindow):
         self._log("info", "Navigation", f"going to {p.name}")
         self._send_goal(p.x, p.y, p.yaw)
 
-    def _pose_key(self) -> str:
-        prof = self.ros.profile
-        return f"{prof.id}/{self._nav_map}" if prof and self._nav_map else ""
-
     _nav_map = ""           # saved map Nav2 runs on; "" = none, or SLAM
 
     def last_pose(self):
         """(x, y, yaw) where the robot last was on the current saved map."""
-        p = self.settings.get("last_pose", {}).get(self._pose_key())
+        p = self.robot_state.get("last_pose", {}).get(self._nav_map)
         return tuple(p[:3]) if p else None
 
     def _store_pose(self, x: float, y: float, yaw: float) -> None:
-        key = self._pose_key()
-        if key:
-            self.settings.setdefault("last_pose", {})[key] = [round(x, 3), round(y, 3), round(yaw, 3)]
-            save_settings({"last_pose": self.settings["last_pose"]})
+        if self._nav_map:
+            poses = dict(self.robot_state.get("last_pose", {}))
+            poses[self._nav_map] = [round(x, 3), round(y, 3), round(yaw, 3)]
+            self.robot_state.update(last_pose=poses)
             self._pose_saved_t = time.monotonic()
             self._moved = False
 
@@ -600,7 +809,7 @@ class MainWindow(QMainWindow):
         """Keep the last position while driving and once stopped. Not before
         the robot has moved: right after a start the pose is just the launch
         default, and storing it would lose the real one."""
-        if not self._pose_key() or not self.ros.profile:
+        if not self._nav_map or not self.ros.profile:
             return
         t = self.ros.profile.topics
         if self.tf.pose_xyyaw(t.map_frame, t.base_frame) is None:

@@ -120,14 +120,23 @@ class ConnectionPanel(QWidget):
     # ---- data flow ----
 
     def _reload(self) -> None:
+        # Qt may move the current row while the list fills: that must not count
+        # as the operator picking a robot, each robot has its own data.
+        self.list.blockSignals(True)
         self.list.clear()
         for p in self.store.profiles:
             item = QListWidgetItem(f"{p.name}   —   {p.ws_url}")
             item.setData(Qt.UserRole, p.id)
             self.list.addItem(item)
+        self.list.setCurrentRow(-1)
+        self.list.blockSignals(False)
         active = self.store.active()
         if active:
             self._select_id(active.id)
+
+    def refresh(self) -> None:
+        """The list of robots changed from outside this page."""
+        self._reload()
 
     def _select_id(self, pid: str) -> None:
         for i in range(self.list.count()):

@@ -49,6 +49,7 @@ LOG = logging.getLogger("rcs.ros")
 LAUNCHER_CMD = "/rcs/launcher/cmd"
 LAUNCHER_STATE = "/rcs/launcher/state"
 LAUNCHER_PREVIEW = "/rcs/launcher/preview"
+LAUNCHER_MAP_DATA = "/rcs/launcher/map_data"
 
 
 # ----- small helpers ---------------------------------------------------------
@@ -192,6 +193,7 @@ class RosClient(QObject):
     estop_received = Signal(bool)
     launcher_state = Signal(object)      # dict from the robot's rcs_launcher.py
     map_preview = Signal(object)         # dict: answer to the launcher's map_preview op
+    map_data = Signal(object)            # dict: answer to the launcher's map_get / map_put
     nav_status = Signal(str)             # "idle" | "active" | "succeeded" | "aborted" | "canceled"
 
     CONNECT_HINT_MS = 6000
@@ -407,6 +409,7 @@ class RosClient(QObject):
             self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage", self._on_tf)
             self._subscribe(LAUNCHER_STATE, "std_msgs/msg/String", self._on_launcher_state)
             self._subscribe(LAUNCHER_PREVIEW, "std_msgs/msg/String", self._on_map_preview)
+            self._subscribe(LAUNCHER_MAP_DATA, "std_msgs/msg/String", self._on_map_data)
             if t.nav_action:
                 self._subscribe(f"{t.nav_action}/_action/status", "action_msgs/msg/GoalStatusArray",
                                 self._on_nav_status)
@@ -529,6 +532,14 @@ class RosClient(QObject):
             return
         if isinstance(st, dict):
             self._post("map_preview", st)
+
+    def _on_map_data(self, m: dict) -> None:
+        try:
+            st = json.loads(m.get("data", ""))
+        except (TypeError, ValueError):
+            return
+        if isinstance(st, dict):
+            self._post("map_data", st)
 
     def send_launcher_cmd(self, op: str, **kw) -> str:
         """Ask the robot's launcher to start/stop a stack or save the map.

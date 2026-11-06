@@ -35,6 +35,10 @@ WebSocket.
 - **3D map:** a colored 3D map built live from the camera's depth + color
   images, each frame placed with the TF at its own timestamp; save / open
   PLY (also opens `save_run`'s `cloud3d.ply`).
+- **Your data, per robot:** each robot keeps its own missions, places, event
+  log and the state the app was left in. Back it all up to one file, or share
+  missions, places and maps with other operators. Copy maps between the PC and
+  the robot.
 - **Camera** (compressed JPEG), received only while its page is open to save
   Wi-Fi, **Status** (speeds, per-topic rates) and **Logs** (`/rosout`).
 - Stays responsive on Windows: connecting never blocks the window, heavy
@@ -62,6 +66,8 @@ python -m rcs
 | `tests/test_e2e.py` | nothing (built-in mock rosbridge) | the app connects, subscribes, streams teleop, publishes goals |
 | `tests/test_robot_page.py` | nothing (mock rosbridge with a fake launcher) | Robot programs page: start/stop bringup and Nav2, SLAM, save map (22 checks) |
 | `tests/test_stress.py` | nothing (mock rosbridge `--heavy`: 1000×1000 map and costmap, 4995-point scans, synthetic RGB-D camera with 0.3 s latency) | GUI never stalls > 0.5 s; 3D map walls land within cm of the true walls while the robot turns, colors right; PLY save/open; reconnect after rosbridge dies; unreachable host does not block (24 checks) |
+| `tests/test_data.py` | nothing (mock rosbridge running the robot's real `map_exchange.py`) | per-robot data, moving from older versions, what comes back after a crash and that nothing moves by itself, packs, hostile packs, copying maps with lost messages |
+| `tests/test_real_launcher.py` | ROS 2 Humble and rosbridge on the PC | the same map copies through the real `rcs_launcher.py` and real rosbridge, in a temporary workspace |
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
 | `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
 

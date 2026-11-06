@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import List, Optional
 
-from .profile import CONFIG_DIR
+from .profile import CONFIG_DIR, atomic_write
 
 PLACES_PATH = CONFIG_DIR / "places.json"
 
@@ -28,6 +28,10 @@ class Place:
 
 class PlaceStore:
     def __init__(self, path: Path = PLACES_PATH) -> None:
+        self.use(path)
+
+    def use(self, path: Path) -> None:
+        """Work on another robot's file from now on."""
         self.path = path
         self.places: List[Place] = []
         try:
@@ -38,7 +42,7 @@ class PlaceStore:
             pass
 
     def save(self) -> None:
-        self.path.write_text(json.dumps({"places": [asdict(p) for p in self.places]}, indent=2))
+        atomic_write(self.path, json.dumps({"places": [asdict(p) for p in self.places]}, indent=2))
 
     def add(self, name: str, x: float, y: float, yaw: float, map_name: str = "") -> Place:
         p = Place(str(uuid.uuid4())[:8], name, x, y, yaw, map_name)

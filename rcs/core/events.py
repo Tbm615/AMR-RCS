@@ -54,8 +54,16 @@ class EventLog(QObject):
         self.events: deque = deque(maxlen=KEEP)
         self._load()
 
+    def use(self, path: Path) -> None:
+        """Show and write another robot's log from now on."""
+        self.path = path
+        self.events.clear()
+        self._load()
+        self.cleared.emit()
+
     def _load(self) -> None:
         try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.path, newline="", encoding="utf-8") as f:
                 for row in csv.reader(f):
                     if len(row) == 4:

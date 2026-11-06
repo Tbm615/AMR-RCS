@@ -180,6 +180,7 @@ class RobotPanel(QWidget):
         self._connected = False
         self._previews: dict = {}    # map name -> (mtime, answer, QPixmap or None)
         self._preview_asked: dict = {}   # map name -> monotonic time of the request
+        self._want_map = ""          # map to select once the robot lists it
         self._build()
         ros.launcher_state.connect(self._on_state)
         ros.map_preview.connect(self._on_preview)
@@ -219,6 +220,7 @@ class RobotPanel(QWidget):
         self.preview = _MapPreview()
         self.nav.extra.addWidget(self.preview)
         self.map_combo.currentTextChanged.connect(lambda _t: self._update_preview())
+        self.map_combo.activated.connect(lambda _i: setattr(self, "_want_map", ""))
         self.rb_map.toggled.connect(lambda _on: self._update_preview())
         self.nav.extra.addWidget(self.rb_slam)
         self.nav_hint = QLabel(); self.nav_hint.setProperty("muted", True); self.nav_hint.setWordWrap(True)
@@ -264,6 +266,19 @@ class RobotPanel(QWidget):
             "(Set initial pose)." if self.rb_map.isChecked() else
             "The map starts empty and grows as the robot drives (Teleop or goals). "
             "No initial pose needed. Save it below when done.")
+
+    def choice(self) -> dict:
+        """What is selected, for the robot's saved state."""
+        return {"mode": "map" if self.rb_map.isChecked() else "slam",
+                "map": self._want_map or self.map_combo.currentText()}
+
+    def set_choice(self, mode: str, map_name: str) -> None:
+        """Select only: nothing starts. The list of maps may not be here yet."""
+        (self.rb_slam if mode == "slam" else self.rb_map).setChecked(True)
+        self._want_map = map_name
+        if self.map_combo.findText(map_name) >= 0:
+            self.map_combo.setCurrentText(map_name)
+            self._want_map = ""
 
     # ---- actions ----
 
@@ -320,11 +335,12 @@ class RobotPanel(QWidget):
         self._state = st
         maps = st.get("maps") or []
         if maps != [self.map_combo.itemText(i) for i in range(self.map_combo.count())]:
-            cur = self.map_combo.currentText()
+            cur = self._want_map or self.map_combo.currentText()
             self.map_combo.blockSignals(True)
             self.map_combo.clear(); self.map_combo.addItems(maps)
             if cur in maps:
                 self.map_combo.setCurrentText(cur)
+                self._want_map = ""
             self.map_combo.blockSignals(False)
         res = st.get("result") or {}
         if self._pending and res.get("id") == self._pending:

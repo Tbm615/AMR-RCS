@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional
 
-from .profile import MISSIONS_PATH
+from .profile import MISSIONS_PATH, atomic_write
 
 
 @dataclass
@@ -33,6 +33,7 @@ class Mission:
     loop: bool = False
     laps: int = 0               # with loop: laps to run, 0 = until stopped
     waypoints: List[Waypoint] = field(default_factory=list)
+    map: str = ""               # saved map its coordinates are on; "" = SLAM or unknown
 
     def to_dict(self) -> dict:
         return {
@@ -40,6 +41,7 @@ class Mission:
             "name": self.name,
             "loop": self.loop,
             "laps": self.laps,
+            "map": self.map,
             "waypoints": [asdict(w) for w in self.waypoints],
         }
 
@@ -50,7 +52,10 @@ class Mission:
             name=d.get("name", "mission"),
             loop=bool(d.get("loop", False)),
             laps=int(d.get("laps", 0)),
-            waypoints=[Waypoint(**w) for w in d.get("waypoints", [])],
+            map=str(d.get("map", "")),
+            # ignore keys this version doesn't know (saved by a newer RCS)
+            waypoints=[Waypoint(**{k: v for k, v in w.items() if k in Waypoint.__dataclass_fields__})
+                       for w in d.get("waypoints", [])],
         )
 
     @classmethod
@@ -64,6 +69,12 @@ class MissionStore:
         self.missions: List[Mission] = []
         self.load()
 
+    def use(self, path: Path) -> None:
+        """Work on another robot's file from now on."""
+        self.path = path
+        self.missions = []
+        self.load()
+
     def load(self) -> None:
         if not self.path.exists():
             self.save()
@@ -75,7 +86,7 @@ class MissionStore:
         self.missions = [Mission.from_dict(d) for d in data.get("missions", [])]
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(
+        atomic_write(self.path, json.dumps(
             {"missions": [m.to_dict() for m in self.missions]}, indent=2))
 
     def upsert(self, m: Mission) -> None:

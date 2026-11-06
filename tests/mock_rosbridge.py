@@ -25,6 +25,7 @@ import math
 import os
 import struct
 import sys
+import tempfile
 import time
 from typing import Dict, List
 
@@ -33,7 +34,9 @@ import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # synthetic_rgbd
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "robot"))
+import map_files                                                 # noqa: E402
 import map_preview                                               # noqa: E402
+from map_exchange import MapExchange                             # noqa: E402
 
 
 HEAVY = False
@@ -72,6 +75,20 @@ class FakeLauncher:
         self.preview_out: list = []     # answers waiting to go on /rcs/launcher/preview
         self.preview_asked: list = []
         self.result = {"id": "", "ok": True, "msg": ""}
+        # map_a is a real file so that it can be copied; map_b stands for a
+        # map the launcher cannot read
+        self.map_dir = tempfile.mkdtemp(prefix="rcs_mock_maps_")
+        img = np.full((60, 80), 254, np.uint8)
+        img[:, 40] = 0
+        map_files.write_map(self.map_dir, "map_a", {
+            "resolution": 0.05, "origin": [-1.0, -2.0, 0.0], "negate": 0, "occupied_thresh": 0.65,
+            "free_thresh": 0.25, "mode": "trinary"}, b"P5\n80 60\n255\n" + img.tobytes())
+        self.nav_map = ""           # map Nav2 runs on, refused as a target
+        self.drop_next = 0          # answers to lose on the way back
+        self.exchange = MapExchange(self._map_paths, self.map_dir, lambda n: n == self.nav_map)
+
+    def _map_paths(self) -> dict:
+        return {m: os.path.join(self.map_dir, m + ".yaml") for m in self.maps}
 
     def _set(self, k, state, args=None):
         self.stacks[k].update(state=state, since=time.time(), args=args or {})
@@ -83,6 +100,18 @@ class FakeLauncher:
             self.preview_asked.append(cmd.get("name"))
             if not self.old:
                 self.preview_out.append(self._preview(cmd.get("name", "")))
+            return
+        if op in ("map_get", "map_put"):
+            if self.old:
+                return
+            ans = self.exchange.handle(cmd)
+            if ans.get("done"):
+                self.maps = sorted(set(self.maps) | {cmd.get("name", "")})
+            if self.drop_next > 0:
+                self.drop_next -= 1
+            else:
+                self.preview_out.append({"op": "publish", "topic": "/rcs/launcher/map_data",
+                                         "msg": {"data": json.dumps(ans)}})
             return
         if op == "start" and k == "bringup":
             self._set("bringup", "running"); msg = "bringup starting"
@@ -118,6 +147,7 @@ class FakeLauncher:
               "maps": self.maps, "busy": "", "result": self.result}
         if not self.old:
             st["map_mtimes"] = {m: 1000.0 for m in self.maps}
+            st["caps"] = ["map_transfer"]
         return {"op": "publish", "topic": "/rcs/launcher/state", "msg": {"data": json.dumps(st)}}
 
 

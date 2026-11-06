@@ -11,14 +11,18 @@ to it through two std_msgs/String topics carrying JSON:
       {"id": "...", "op": "stop",  "stack": "bringup" | "nav"}
       {"id": "...", "op": "save_map", "name": "office"}
       {"id": "...", "op": "map_preview", "name": "office"}
+      {"id": "...", "op": "map_get" | "map_put", ...}     see map_exchange.py
 
   /rcs/launcher/state  robot -> app, 1 Hz and on every change
       {"version": 1, "stacks": {"bringup": {...}, "nav": {...}},
-       "maps": [...], "map_mtimes": {name: mtime}, "result": {"id", "ok", "msg"}}
+       "maps": [...], "map_mtimes": {name: mtime}, "caps": ["map_transfer"],
+       "result": {"id", "ok", "msg"}}
 
   /rcs/launcher/preview  robot -> app, answer to map_preview
       {"name": "office", "png": "<base64>", "width_m", "height_m", "resolution",
        "mtime", "saved": true}   or   {"name": "office", "error": "..."}
+
+  /rcs/launcher/map_data  robot -> app, answers to map_get and map_put
 
 Stacks:
   bringup  drives, lidar, scan filter, camera (bringup.launch.py)
@@ -45,6 +49,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
+from map_exchange import MapExchange
 from map_preview import map_preview
 
 WS = Path(os.environ.get("RCS_WS", str(Path.home() / "tbm_test"))).expanduser()
@@ -203,6 +208,11 @@ def _signal_groups(procs: list) -> None:
 STACKS = {"bringup": Stack("bringup"), "nav": Stack("nav")}
 
 
+def _nav_runs_on(name: str) -> bool:
+    nav = STACKS["nav"]
+    return nav.running() and nav.args.get("map") == name
+
+
 def _save_pids() -> None:
     try:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -239,6 +249,8 @@ class Launcher(Node):
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.pub = self.create_publisher(String, "/rcs/launcher/state", latched)
         self.preview_pub = self.create_publisher(String, "/rcs/launcher/preview", 5)
+        self.map_data_pub = self.create_publisher(String, "/rcs/launcher/map_data", 5)
+        self.exchange = MapExchange(_maps, SAVED_MAPS, _nav_runs_on)
         self.create_subscription(String, "/rcs/launcher/cmd", self._on_cmd, 10)
         self.result = {"id": "", "ok": True, "msg": ""}
         self.busy = ""             # description of the command being executed
@@ -276,7 +288,7 @@ class Launcher(Node):
         maps = _maps()
         msg = {"version": 1, "time": time.time(), "stacks": stacks,
                "maps": sorted(maps), "map_mtimes": {k: _mtime(v) for k, v in maps.items()},
-               "busy": self.busy, "result": self.result}
+               "caps": ["map_transfer"], "busy": self.busy, "result": self.result}
         self.pub.publish(String(data=json.dumps(msg)))
 
     # -- commands --
@@ -291,6 +303,9 @@ class Launcher(Node):
         if cmd.get("op") == "map_preview":      # read-only: fine while a stack is starting
             threading.Thread(target=self._send_preview, args=(str(cmd.get("name", "")),),
                              daemon=True).start()
+            return
+        if cmd.get("op") in ("map_get", "map_put"):     # files only: fine while a stack runs
+            threading.Thread(target=self._exchange_map, args=(cmd,), daemon=True).start()
             return
         with self._lock:
             if self.busy:
@@ -309,6 +324,9 @@ class Launcher(Node):
         except Exception as e:      # a bad map file must not touch the launcher
             out = {"name": name, "error": str(e)}
         self.preview_pub.publish(String(data=json.dumps(out)))
+
+    def _exchange_map(self, cmd: dict) -> None:
+        self.map_data_pub.publish(String(data=json.dumps(self.exchange.handle(cmd))))
 
     def _run(self, cmd: dict) -> None:
         try:

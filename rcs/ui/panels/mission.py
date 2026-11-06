@@ -43,6 +43,8 @@ class MissionPanel(QWidget):
         self._robot_x = 0.0
         self._robot_y = 0.0
         self._lap = 0                   # laps finished in this run
+        self.map_name = ""              # saved map Nav2 runs on; "" = none, or SLAM
+        self._resume: Optional[dict] = None     # run the app was closed in, see show_last_run
         self._undo_stack: list = []     # waypoint lists of the open mission
         self._build()
         self._reload_missions()
@@ -81,6 +83,10 @@ class MissionPanel(QWidget):
         self.name_edit.editingFinished.connect(self._rename)
         rename_row.addWidget(QLabel("Name:")); rename_row.addWidget(self.name_edit, 1)
         mv.addLayout(rename_row)
+        self.map_lbl = QLabel("")
+        self.map_lbl.setProperty("muted", True)
+        self.map_lbl.setToolTip("Its coordinates only mean something on this map")
+        mv.addWidget(self.map_lbl)
         lr = QHBoxLayout()
         self.loop_ck = QCheckBox("Loop route")
         self.loop_ck.setToolTip("Start again from the first waypoint after the last one")
@@ -204,6 +210,7 @@ class MissionPanel(QWidget):
         self.laps_sb.setValue(self.cur.laps)
         self.laps_sb.setEnabled(self.cur.loop)
         self.laps_sb.blockSignals(False)
+        self.map_lbl.setText(f"Map: {self.cur.map}" if self.cur.map else "")
         self._undo_stack.clear()
         self.undo_btn.setEnabled(False)
         self._refresh_table()
@@ -253,6 +260,7 @@ class MissionPanel(QWidget):
             return
         m = Mission.new(self.cur.name + " (copy)")
         m.loop = self.cur.loop
+        m.map = self.cur.map
         m.waypoints = [Waypoint(**{**w.__dict__, "id": w.id + "c"}) for w in self.cur.waypoints]
         self.store.upsert(m)
         self._reload_missions(); self._set_combo_to(m.id)
@@ -265,6 +273,26 @@ class MissionPanel(QWidget):
         self.store.remove(self.cur.id)
         self.cur = None
         self._reload_missions()
+
+    def reload(self) -> None:
+        """The store's list changed under us (another robot, an import)."""
+        keep = self.cur.id if self.cur else ""
+        self._reload_missions()
+        if keep and self.store.get(keep):
+            self._set_combo_to(keep)
+
+    def open_mission(self, mid: str) -> None:
+        if self.store.get(mid):
+            self._set_combo_to(mid)
+
+    def set_map(self, name: str) -> None:
+        self.map_name = name
+
+    def _stamp_map(self) -> None:
+        """A mission belongs to the map its first waypoint was set on."""
+        if self.cur and not self.cur.waypoints:
+            self.cur.map = self.map_name
+            self.map_lbl.setText(f"Map: {self.cur.map}" if self.cur.map else "")
 
     def _set_combo_to(self, mid: str) -> None:
         for i in range(self.mission_combo.count()):
@@ -357,6 +385,7 @@ class MissionPanel(QWidget):
         wp.tolerance = self.tol_sb.value()
         wp.dwell = self.dwell_sb.value()
         self._remember()
+        self._stamp_map()
         self.cur.waypoints.append(wp)
         self._save(); self._refresh_table(); self._emit_wps()
 
@@ -371,6 +400,7 @@ class MissionPanel(QWidget):
         wp.tolerance = self.tol_sb.value()
         wp.dwell = self.dwell_sb.value()
         self._remember()
+        self._stamp_map()
         self.cur.waypoints.append(wp)
         self._save(); self._refresh_table(); self._emit_wps()
 
@@ -490,17 +520,31 @@ class MissionPanel(QWidget):
     def _play_from_selected(self) -> None:
         rows = self.selected_rows()
         if len(rows) == 1 and not self._exec_running:
-            self._play(rows[0])
+            r = self._resume
+            same = r and self.cur and r["mission"] == self.cur.id and r["index"] == rows[0]
+            self._play(rows[0], r["lap"] if same else 0)
 
-    def _play(self, start: Optional[int] = None) -> None:
-        if not self.cur or not self.cur.waypoints:
+    def _wrong_map(self) -> bool:
+        """Waypoints are coordinates on one map. On another they are somewhere
+        else entirely, so the mission must not run there. With no saved map
+        known (SLAM) there is nothing to compare."""
+        if self.cur.map and self.map_name and self.cur.map != self.map_name:
+            text = f"'{self.cur.name}' is for map {self.cur.map}, but Nav2 is running on {self.map_name}"
+            self.status_lbl.setText(text)
+            self.event.emit("warn", f"{text}: not started")
+            return True
+        return False
+
+    def _play(self, start: Optional[int] = None, lap: int = 0) -> None:
+        if not self.cur or not self.cur.waypoints or self._wrong_map():
             return
         if start is not None:
             self._exec_idx = start
-            self._lap = 0
+            self._lap = lap
         elif self._exec_idx < 0:
             self._exec_idx = 0
             self._lap = 0
+        self._resume = None
         self._exec_running = True
         self.event.emit("info", f"'{self.cur.name}' started ({len(self.cur.waypoints)} waypoints)")
         self._dispatch_current()
@@ -516,9 +560,34 @@ class MissionPanel(QWidget):
         if self._exec_running or self._exec_idx >= 0:
             self._stop()
 
+    def run_state(self) -> Optional[dict]:
+        """Where a run is, for the robot's saved state; None with no run."""
+        if self._exec_idx >= 0 and self.cur:
+            return {"mission": self.cur.id, "index": self._exec_idx, "lap": self._lap}
+        return self._resume
+
+    def show_last_run(self, run: dict) -> Optional[str]:
+        """The app was closed during a run: show where it was and select that
+        waypoint. Only that: an operator has to start it, the robot may have
+        been moved or the place may not be clear."""
+        try:
+            mid, idx, lap = str(run["mission"]), int(run["index"]), int(run["lap"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        m = self.store.get(mid)
+        if m is None or not 0 <= idx < len(m.waypoints):
+            return None
+        self._resume = {"mission": mid, "index": idx, "lap": lap}
+        self._set_combo_to(mid)
+        self.select_rows([idx])
+        text = f"'{m.name}' was at waypoint {idx + 1} ({m.waypoints[idx].name})"
+        self.status_lbl.setText(f"{text}. To go on: Start from selected waypoint")
+        return text
+
     def _stop(self) -> None:
         if self._exec_idx >= 0 and self.cur:
             self.event.emit("info", f"'{self.cur.name}' stopped")
+        self._resume = None
         self._exec_running = False
         self._exec_idx = -1
         self.status_lbl.setText("stopped")
