@@ -8,7 +8,7 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 | `rcs-linux-x86_64.tar.gz` | Linux x86-64. `tar xzf rcs-linux-x86_64.tar.gz && ./rcs/rcs` |
 | `rcs_<version>_amd64.deb` | Ubuntu / Debian: `sudo apt install ./rcs_*.deb`, then `rcs` or the menu. |
 
-The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
+The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/Tbm615/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
 ### v0.6.0-beta.1
 
@@ -273,7 +273,7 @@ setup works as is.
 ### Changes in v0.3.0: start bringup and Nav2 from the app
 
 - New **Robot programs** page: start and stop the robot base (bringup) and navigation without a terminal on the robot. Navigation runs on a saved map, or builds a new map with SLAM while you drive, and you can save that map under a name. Each part shows its state, how long it has been running, and its last log lines when something fails.
-- Needs the new robot-side launcher, installed once on the robot together with rosbridge. Both then start by themselves at every boot. See [robot/README.md](https://github.com/b4lanc3/AMR-RCS/blob/main/robot/README.md).
+- Needs the new robot-side launcher, installed once on the robot together with rosbridge. Both then start by themselves at every boot. See [robot/README.md](https://github.com/Tbm615/AMR-RCS/blob/main/robot/README.md).
 - Tested on the real robot: start bringup, start SLAM navigation, save a map, restart navigation on the saved map, stop everything. Nothing is left running after a stop.
 
 ### Changes in v0.2.2: tested on the real robot

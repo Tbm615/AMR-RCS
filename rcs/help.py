@@ -3,7 +3,7 @@ in the app's language. The full guide is docs/USER_GUIDE.md."""
 # flake8: noqa: E501
 from __future__ import annotations
 
-GUIDE = "https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md"
+GUIDE = "https://github.com/Tbm615/AMR-RCS/blob/main/docs/USER_GUIDE.md"
 
 EN = {
     "conn": ("Connection", """

@@ -7,7 +7,7 @@ needed on the operator PC**.
 The robot runs `rosbridge_server` (port 9090); the app connects to it over
 WebSocket.
 
-**→ [Download](https://github.com/b4lanc3/AMR-RCS/releases/latest)**
+**→ [Download](https://github.com/Tbm615/AMR-RCS/releases/latest)**
 &nbsp;·&nbsp; **→ [User guide](docs/USER_GUIDE.md)**
 
 ![2D map view with occupancy grid, scan, planned path and robot pose](docs/screenshots/map.png)

@@ -108,7 +108,7 @@ and start bringup and Nav2 on the **Robot programs** page.
 ## 3. Install the app
 
 Download the build for your OS from the
-[Releases page](https://github.com/b4lanc3/AMR-RCS/releases/latest).
+[Releases page](https://github.com/Tbm615/AMR-RCS/releases/latest).
 
 **Windows**
 
