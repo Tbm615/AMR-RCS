@@ -5,6 +5,7 @@ someone else. A zip holding some of:
   profile.json    robot profile
   missions.json   places.json   layouts.json   state.json   events.csv
   maps/<name>.yaml + maps/<name>.pgm
+  model.npz       the robot's imported model (robot_model.py; no pickles)
 
 A pack may come from anyone, so it is read as data: only the members above are
 looked at, nothing is ever extracted to a path taken from the zip, and every
@@ -30,6 +31,7 @@ from .map_files import MAX_BLOB, canonical_yaml, parse_yaml, pgm_size
 from .maps import MapLibrary
 from .mission import Mission, MissionStore
 from .places import Place, PlaceStore
+from . import robot_model
 from .profile import ProfileStore, RobotProfile, checked_limits
 from .robot_data import RobotState, robot_dir
 
@@ -45,7 +47,7 @@ def export_pack(path, *, robot_name: str, profile: Optional[RobotProfile] = None
                 missions: Optional[List[Mission]] = None, places: Optional[List[Place]] = None,
                 library: Optional[MapLibrary] = None, maps: Tuple[str, ...] = (),
                 layouts: Optional[dict] = None, state: Optional[dict] = None,
-                events_path: Optional[Path] = None) -> Path:
+                events_path: Optional[Path] = None, model: Optional["robot_model.Model"] = None) -> Path:
     path = Path(path)
     if path.suffix.lower() != SUFFIX:
         path = path.with_name(path.name + SUFFIX)
@@ -56,7 +58,7 @@ def export_pack(path, *, robot_name: str, profile: Optional[RobotProfile] = None
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
             z.writestr("manifest.json", json.dumps(manifest, indent=2))
             if profile is not None:
-                z.writestr("profile.json", json.dumps(profile.to_dict(), indent=2))
+                z.writestr("profile.json", json.dumps(profile.shared(), indent=2))
             if missions is not None:
                 z.writestr("missions.json", json.dumps({"missions": [m.to_dict() for m in missions]}, indent=2))
             if places is not None:
@@ -67,6 +69,8 @@ def export_pack(path, *, robot_name: str, profile: Optional[RobotProfile] = None
                 z.writestr("state.json", json.dumps(state, indent=2))
             if events_path is not None and Path(events_path).exists():
                 z.write(events_path, "events.csv")
+            if model is not None:
+                z.writestr("model.npz", robot_model.to_bytes(model))
             for name in maps:
                 meta, pgm = library.read(name)
                 z.writestr(f"maps/{name}.yaml", canonical_yaml(name, meta))
@@ -108,6 +112,7 @@ def _clean_profile(d: dict) -> RobotProfile:
     p.name, p.host, p.note = str(p.name)[:100], str(p.host), str(p.note)
     p.port = min(65535, max(1, p.port))
     p.limits = checked_limits(d.get("limits", {}))
+    p.user, p.token, p.role = "", "", ""         # a sign-in never comes from a file
     return p
 
 
@@ -142,6 +147,7 @@ class Pack:
     layouts: dict = field(default_factory=dict)
     state: Optional[dict] = None
     events: Optional[bytes] = None
+    model: Optional["robot_model.Model"] = None
 
 
 def read_pack(path) -> Pack:
@@ -201,6 +207,12 @@ def _read(z: zipfile.ZipFile) -> Pack:
     if isinstance(state, dict):
         pack.state = state
     pack.events = member("events.csv")
+    raw = member("model.npz", robot_model.MAX_FILE)
+    if raw is not None:
+        try:
+            pack.model = robot_model.from_bytes(raw)
+        except ValueError as e:
+            raise ValueError(f"the robot model is damaged: {e}") from e
     for filename in infos:
         m = _MAP_MEMBER.fullmatch(filename)
         if not m:
@@ -230,6 +242,7 @@ class ImportResult:
     layouts_added: int = 0
     map_refs: Set[str] = field(default_factory=set)     # maps the imported items are on
     robot: Optional[RobotProfile] = None
+    model: str = ""                     # "added" | "kept" (the robot has one) | ""
 
     def text(self) -> str:
         parts = []
@@ -242,6 +255,10 @@ class ImportResult:
                 parts.append(f"{n} {what}" + (f" ({same} already here)" if same else ""))
         if self.layouts_added:
             parts.append(f"{self.layouts_added} layouts")
+        if self.model == "added":
+            parts.append("its robot model")
+        elif self.model == "kept":
+            parts.append("robot model not taken: this robot has an imported one already")
         for old, new in self.renamed.items():
             parts.append(f"map {old} kept as {new}: another map has that name")
         return "; ".join(parts) or "nothing new"
@@ -330,6 +347,21 @@ def import_into(pack: Pack, want: Set[str], library: MapLibrary,
     return res
 
 
+def install_model(pack: Pack, profile: RobotProfile, profiles: ProfileStore, res: ImportResult) -> None:
+    """Give a robot the pack's model, unless it has an imported one already."""
+    if pack.model is None:
+        return
+    f = robot_dir(profile.id) / robot_model.MODEL_FILE
+    if f.exists():
+        res.model = "kept"
+        return
+    robot_model.save(pack.model, f)
+    profile.model = "imported"
+    if any(p.id == profile.id for p in profiles.profiles):
+        profiles.save()
+    res.model = "added"
+
+
 def import_as_new_robot(pack: Pack, want: Set[str], library: MapLibrary,
                         profiles: ProfileStore) -> ImportResult:
     """Make a robot from the pack's profile, with its own id: what is here stays."""
@@ -341,6 +373,10 @@ def import_as_new_robot(pack: Pack, want: Set[str], library: MapLibrary,
         RobotState(d / "state.json").update(**_clean_state(pack.state, res.renamed))
     if "events" in want and pack.events is not None:
         (d / "events.csv").write_bytes(pack.events)
+    if "model" in want and pack.model is not None:
+        install_model(pack, prof, profiles, res)
+    elif prof.model == "imported":
+        prof.model = "auto"             # its model did not come along
     profiles.profiles.append(prof)
     profiles.save()
     res.robot = prof

@@ -22,6 +22,7 @@ import base64
 import json
 import logging
 import math
+import socket
 import threading
 import time
 import uuid
@@ -41,6 +42,8 @@ from PySide6.QtGui import QImage
 
 from . import cloud_map as cm
 from .profile import RobotProfile
+from . import gateway as gw
+from . import permissions
 from .tf_cache import TFCache, stamp_sec
 
 LOG = logging.getLogger("rcs.ros")
@@ -51,6 +54,15 @@ LAUNCHER_STATE = "/rcs/launcher/state"
 LAUNCHER_PREVIEW = "/rcs/launcher/preview"
 LAUNCHER_MAP_DATA = "/rcs/launcher/map_data"
 BATTERY = "/rcs/battery"
+BATTERY_CMD = "/rcs/battery/cmd"        # app -> robot: battery log requests
+BATTERY_LOG = "/rcs/battery/log"        # robot -> app: the answers
+# The robot's own E-STOP (robot/rcs_safety.py).
+ESTOP_STATE = "/rcs/estop/state"
+HEARTBEAT = "/rcs/app/heartbeat"
+# The robot's gateway (robot/rcs_gateway.py): who is signed in, and refusals.
+GW_SESSION = "/rcs/gateway/session"
+GW_DENIED = "/rcs/gateway/denied"
+HEARTBEAT_MS = 500
 
 
 # ----- small helpers ---------------------------------------------------------
@@ -196,7 +208,12 @@ class RosClient(QObject):
     map_preview = Signal(object)         # dict: answer to the launcher's map_preview op
     map_data = Signal(object)            # dict: answer to the launcher's map_get / map_put
     battery = Signal(object)             # dict from the robot's rcs_battery.py
+    battery_log = Signal(object)         # dict: answer to a battery log request
+    estop_state = Signal(object)         # dict from the robot's rcs_safety.py
     nav_status = Signal(str)             # "idle" | "active" | "succeeded" | "aborted" | "canceled"
+    session = Signal(object)             # dict {"user", "role"} from the robot's gateway
+    denied = Signal(object)              # dict {"what", "need", "role"}: not done, and why
+    auth_problem = Signal(str)           # the robot's gateway wants a sign-in: why
 
     CONNECT_HINT_MS = 6000
 
@@ -225,6 +242,14 @@ class RosClient(QObject):
         self.cloud_world = ""           # frame the 3D map is in, see _world_frame
         self._static_tf_t = -1e9        # last time /tf_static was asked for again
         self._base_state = ""           # bringup state last seen from the launcher
+        self._nav_state = ""            # Nav2 / SLAM state last seen from the launcher
+        self._map_t = -1e9              # last /map received
+        self._nav_up_t = -1e9           # when Nav2 / SLAM was last seen coming up
+        self._map_retry_t = -1e9        # last time /map was asked for again
+        self.role = ""                  # from the robot's gateway; "" = no gateway, all allowed
+        self.user = ""
+        self._denied_t: Dict[str, float] = {}
+        self._probing = False
         self._connect_hint = QTimer(self)
         self._connect_hint.setSingleShot(True)
         self._connect_hint.timeout.connect(self._hint_not_connected)
@@ -240,6 +265,14 @@ class RosClient(QObject):
         self._color_ring: deque = deque(maxlen=12)    # (stamp, jpeg bytes) for RGB-D pairing
         self._depth_info: Optional[dict] = None       # last CameraInfo of the depth stream
         self.map3d_frames = 0
+        # The heartbeat tells the robot's E-STOP gate this app is there, and
+        # whether it is driving: if it goes silent then, the robot stops.
+        self.app_id = uuid.uuid4().hex[:12]
+        self.driving = False
+        self._beat = QTimer(self)
+        self._beat.setInterval(HEARTBEAT_MS)
+        self._beat.timeout.connect(self._heartbeat)
+        self._beat.start()
 
     # ---- thread hand-off ----
 
@@ -299,9 +332,13 @@ class RosClient(QObject):
         self._want_connected = True
         self._gen += 1
         gen = self._gen
+        p = self.profile
+        headers = {"Authorization": f"Bearer {p.token}"} if p.token else None
+        if p.use_ssl:
+            gw.pin_ws(p.host, p.port, p.tls_pin)
+        self.role, self.user = (p.role, p.user) if p.token else ("", "")
         try:
-            ros = roslibpy.Ros(host=self.profile.host, port=self.profile.port,
-                               is_secure=self.profile.use_ssl)
+            ros = roslibpy.Ros(host=p.host, port=p.port, is_secure=p.use_ssl, headers=headers)
         except Exception as e:  # noqa: BLE001
             self.connection_error.emit(str(e))
             return
@@ -319,6 +356,35 @@ class RosClient(QObject):
             self.connection_error.emit(
                 f"no answer from {self.profile.ws_url} yet — still trying. "
                 "Is rosbridge running on the robot and this PC on its network?")
+            self.probe_gateway()
+
+    def probe_gateway(self) -> None:
+        """Not connected or dropped: ask the robot's gateway, off the GUI thread,
+        whether a sign-in is the reason. If so, stop trying (it would only be
+        refused again) and say so."""
+        if self._probing or not self.profile:
+            return
+        self._probing = True
+        p, gen = self.profile, self._gen
+
+        def work() -> None:
+            why = ""
+            try:
+                if gw.info(p.host, p.port, p.use_ssl, p.tls_pin) is not None:
+                    if not p.token:
+                        why = "this robot asks you to sign in"
+                    else:
+                        gw.Account(p).whoami()
+            except gw.GatewayError as e:
+                if e.status in (401, 403):
+                    why = "your sign-in ended (signed out, password changed or removed): sign in again"
+                elif e.status == 495:
+                    why = str(e)
+            finally:
+                self._probing = False
+            if why and gen == self._gen:
+                self._post("auth_problem", why)
+        threading.Thread(target=work, daemon=True).start()
 
     def _drop_connection(self) -> None:
         ros, self._ros = self._ros, None
@@ -344,7 +410,21 @@ class RosClient(QObject):
         except Exception:  # noqa: BLE001
             pass
 
+    def _heartbeat(self, bye: bool = False) -> None:
+        if not self.is_connected():
+            return
+        pub = self._advertise(HEARTBEAT, "std_msgs/msg/String")
+        if pub is not None:
+            msg = {"id": self.app_id, "host": socket.gethostname(), "driving": bool(self.driving)}
+            if bye:
+                msg["bye"] = True
+            pub.publish(roslibpy.Message({"data": json.dumps(msg)}))
+
     def disconnect_robot(self) -> None:
+        try:
+            self._heartbeat(bye=True)   # closed on purpose: nothing to stop for
+        except Exception:  # noqa: BLE001
+            pass
         self._want_connected = False
         self._connect_hint.stop()
         self._drop_connection()
@@ -360,6 +440,8 @@ class RosClient(QObject):
         if gen != self._gen:
             return
         self._post("disconnected")
+        if self._want_connected and self.profile and self.profile.token:
+            self.probe_gateway()
 
     # ---- subscriptions ----
 
@@ -389,8 +471,7 @@ class RosClient(QObject):
             self._subscribe(t.scan, "sensor_msgs/msg/LaserScan",
                             lambda m: (self._mark("scan"), self._decoder.submit("scan", self._dec_scan, m)),
                             throttle_rate=100)
-            self._subscribe(t.map, "nav_msgs/msg/OccupancyGrid",
-                            lambda m: (self._mark("map"), self._decoder.submit("map", self._dec_map, m)))
+            self._subscribe(t.map, "nav_msgs/msg/OccupancyGrid", self._on_map)
             self._subscribe(t.global_costmap, "nav_msgs/msg/OccupancyGrid",
                             lambda m: (self._mark("global_costmap"),
                                        self._decoder.submit("gcost", self._dec_cost,
@@ -416,6 +497,14 @@ class RosClient(QObject):
             self._subscribe(LAUNCHER_PREVIEW, "std_msgs/msg/String", self._on_map_preview)
             self._subscribe(LAUNCHER_MAP_DATA, "std_msgs/msg/String", self._on_map_data)
             self._subscribe(BATTERY, "std_msgs/msg/String", self._on_battery)
+            self._subscribe(BATTERY_LOG, "std_msgs/msg/String",
+                            lambda m: self._on_json(m, "battery_log"))
+            # the robot's gateway (robot/rcs_gateway.py) answers these two itself
+            self._subscribe(GW_SESSION, "std_msgs/msg/String", self._on_session)
+            self._subscribe(GW_DENIED, "std_msgs/msg/String",
+                            lambda m: self._on_json(m, "denied"))
+            self._subscribe(ESTOP_STATE, "std_msgs/msg/String",
+                            lambda m: (self._mark("estop_state"), self._on_json(m, "estop_state", True)))
             if t.nav_action:
                 self._subscribe(f"{t.nav_action}/_action/status", "action_msgs/msg/GoalStatusArray",
                                 self._on_nav_status)
@@ -442,6 +531,52 @@ class RosClient(QObject):
                 except Exception:  # noqa: BLE001
                     pass
             self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage", self._on_tf)
+
+    def _on_session(self, m: dict) -> None:         # network thread
+        try:
+            st = json.loads(m.get("data", ""))
+        except (TypeError, ValueError):
+            return
+        if isinstance(st, dict) and st.get("role") in permissions.RANK:
+            self.role, self.user = st["role"], str(st.get("user", ""))
+            self._post("session", st)
+
+    def allowed(self, action: str) -> bool:
+        """Checked before sending: the gateway would refuse it anyway."""
+        if permissions.can(self.role, action):
+            return True
+        now = time.monotonic()
+        if now - self._denied_t.get(action, -1e9) > 3.0:     # teleop asks 20 times a second
+            self._denied_t[action] = now
+            self.denied.emit({"what": permissions.refusal(self.role, action), "need": permissions.NEED[action],
+                              "role": self.role, "local": True})
+        return False
+
+    def _on_map(self, m: dict) -> None:             # network thread
+        self._mark("map")
+        self._map_t = time.monotonic()
+        self._decoder.submit("map", self._dec_map, m)
+
+    MAP_RETRY_S = 5.0
+
+    def refresh_map(self) -> None:
+        """Ask for /map again, like /tf_static: map_server sends a saved map
+        once, when Nav2 comes up. Subscribed before that (the app connects,
+        then Nav2 is started from it), rosbridge subscribes volatile and the
+        map can go by before the two match: the 2D Map stayed empty."""
+        now = time.monotonic()
+        if now - self._map_retry_t < self.MAP_RETRY_S or not self._ros or not self.profile:
+            return
+        self._map_retry_t = now
+        name = self.profile.topics.map
+        with self._topic_lock:
+            sub = self._subs.pop(name, None)
+            if sub is not None:
+                try:
+                    sub.unsubscribe()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._subscribe(name, "nav_msgs/msg/OccupancyGrid", self._on_map)
 
     def _on_tf(self, m: dict) -> None:              # network thread; cheap
         self._mark("tf")
@@ -572,6 +707,14 @@ class RosClient(QObject):
             if base == "running" and self._base_state != "running":
                 self.refresh_static_tf()
             self._base_state = base
+            nav = st.get("stacks", {}).get("nav", {}).get("state", "")
+            now = time.monotonic()
+            if nav == "running" and self._nav_state != "running":
+                self._nav_up_t = now
+            self._nav_state = nav
+            # up for a while and still no map since: ask again (every 5 s)
+            if nav == "running" and self._map_t < self._nav_up_t and now - self._nav_up_t > 3.0:
+                self.refresh_map()
             self._post("launcher_state", st, coalesce=True)
 
     def _on_map_preview(self, m: dict) -> None:
@@ -599,10 +742,32 @@ class RosClient(QObject):
             self._mark("battery")
             self._post("battery", st, coalesce=True)
 
+    def _on_json(self, m: dict, signal_name: str, coalesce: bool = False) -> None:
+        try:
+            st = json.loads(m.get("data", ""))
+        except (TypeError, ValueError):
+            return
+        if isinstance(st, dict):
+            self._post(signal_name, st, coalesce=coalesce)
+
+    def send_battery_cmd(self, op: str, **kw) -> str:
+        """Ask the robot's battery service for its log; the answer comes on
+        battery_log with the same "req"."""
+        req = kw.pop("req", None) or uuid.uuid4().hex[:12]
+        if op in permissions.BATTERY and not self.allowed(permissions.BATTERY[op]):
+            return req
+        pub = self._advertise(BATTERY_CMD, "std_msgs/msg/String")
+        if pub is not None:
+            pub.publish(roslibpy.Message({"data": json.dumps({"req": req, "op": op, **kw})}))
+        return req
+
     def send_launcher_cmd(self, op: str, **kw) -> str:
         """Ask the robot's launcher to start/stop a stack or save the map.
         Returns the command id, echoed back in launcher_state["result"]."""
         cmd_id = uuid.uuid4().hex[:12]
+        if op in permissions.LAUNCHER and not (op == "map_put" and kw.get("seq", 0)) \
+                and not self.allowed(permissions.LAUNCHER[op]):
+            return cmd_id
         pub = self._advertise(LAUNCHER_CMD, "std_msgs/msg/String")
         if pub is not None:
             pub.publish(roslibpy.Message({"data": json.dumps({"id": cmd_id, "op": op, **kw})}))
@@ -701,6 +866,8 @@ class RosClient(QObject):
     def publish_estop(self, on: bool) -> None:
         if not self.profile or not self.profile.topics.estop_topic:
             return
+        if not on and not self.allowed("release_estop"):
+            return
         pub = self._advertise(self.profile.topics.estop_topic, "std_msgs/msg/Bool")
         if pub is not None:
             pub.publish(roslibpy.Message({"data": bool(on)}))
@@ -737,6 +904,10 @@ class RosClient(QObject):
     def publish_cmd_vel(self, lin: float, ang: float) -> None:
         if not self.profile:
             return
+        if not permissions.can(self.role, "drive"):
+            if abs(lin) > 1e-4 or abs(ang) > 1e-4:
+                self.allowed("drive")           # says why, now and then
+            return
         pub = self._advertise(self.profile.topics.cmd_vel, "geometry_msgs/msg/Twist")
         if pub is None:
             return
@@ -746,7 +917,7 @@ class RosClient(QObject):
         }))
 
     def publish_initial_pose(self, x: float, y: float, yaw: float) -> None:
-        if not self.profile or not self._ros:
+        if not self.profile or not self._ros or not self.allowed("pose"):
             return
         pub = self._advertise(self.profile.topics.initial_pose,
                               "geometry_msgs/msg/PoseWithCovarianceStamped")
@@ -777,7 +948,7 @@ class RosClient(QObject):
     # out of the box in Humble. We still try the action for cancel.
 
     def send_nav_goal(self, x: float, y: float, yaw: float = 0.0) -> None:
-        if not self.profile or not self._ros:
+        if not self.profile or not self._ros or not self.allowed("goal"):
             return
         pub = self._advertise(self.profile.topics.goal_pose, "geometry_msgs/msg/PoseStamped")
         if pub is None:

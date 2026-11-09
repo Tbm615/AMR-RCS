@@ -1,0 +1,4 @@
+# /clock at 100 Hz: the default 10 Hz is too coarse for Nav2's 20 Hz loops
+gazebo:
+  ros__parameters:
+    publish_rate: 100.0

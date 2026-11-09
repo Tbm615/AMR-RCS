@@ -39,6 +39,9 @@ def main() -> int:
     env = dict(os.environ)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env.pop("DISPLAY", None)
+    # its own settings: --host would point the operator's real robot at the mock
+    import tempfile
+    env["XDG_CONFIG_HOME"] = env["APPDATA"] = tempfile.mkdtemp(prefix="rcs_test_cfg_")
     # Point the host at loopback so wine localhost works OR a LAN IP for wine.
     host_arg = os.environ.get("RCS_MOCK_HOST", "127.0.0.1")
     # A plain path (incl. Windows paths with backslashes) is used as-is;

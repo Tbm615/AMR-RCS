@@ -29,12 +29,18 @@ MISSIONS_PATH = CONFIG_DIR / "missions.json"
 SETTINGS_PATH = CONFIG_DIR / "settings.json"
 
 
-def atomic_write(path: Path, text: str) -> None:
+def atomic_write(path: Path, text: str, private: bool = False) -> None:
     """Replace a file in one step: a crash leaves the old content or the new
-    one, never half of it."""
+    one, never half of it. private: readable by this user only (sign-in tokens)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
+    if private and os.name != "nt":
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, 0o600)
+    else:
+        tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -130,6 +136,9 @@ def checked_limits(d: dict) -> Limits:
     return out
 
 
+MODEL_KINDS = ("auto", "hinson", "box", "imported")
+
+
 @dataclass
 class RobotProfile:
     id: str
@@ -140,6 +149,15 @@ class RobotProfile:
     topics: Topics = field(default_factory=Topics)
     limits: Limits = field(default_factory=Limits)
     note: str = ""
+    # how it is drawn: "auto" (the Hinson if the footprint is its size, else a
+    # box), "hinson", "box", or "imported" (robots/<id>/model.npz)
+    model: str = "auto"
+    # sign-in with the robot's gateway (robot/rcs_gateway.py): who, the token it
+    # gave (30 days), the role it said; tls_pin: SHA-256 of its certificate
+    user: str = ""
+    token: str = ""
+    role: str = ""
+    tls_pin: str = ""
 
     @property
     def ws_url(self) -> str:
@@ -165,7 +183,18 @@ class RobotProfile:
             topics=topics,
             limits=limits,
             note=d.get("note", ""),
+            model=d.get("model") if d.get("model") in MODEL_KINDS else "auto",
+            user=str(d.get("user") or "")[:40],
+            token=str(d.get("token") or ""),
+            role=d.get("role") if d.get("role") in ("viewer", "operator", "admin") else "",
+            tls_pin=str(d.get("tls_pin") or "").lower()[:64],
         )
+
+    def shared(self) -> dict:
+        """What may leave this PC (packs): not the sign-in."""
+        d = self.to_dict()
+        d.update(user="", token="", role="")
+        return d
 
     @classmethod
     def new(cls, name: str = "Hinson robot", host: str = "192.168.10.10") -> "RobotProfile":
@@ -204,7 +233,7 @@ class ProfileStore:
             "profiles": [p.to_dict() for p in self.profiles],
             "active_id": self.active_id,
         }
-        atomic_write(self.path, json.dumps(payload, indent=2))
+        atomic_write(self.path, json.dumps(payload, indent=2), private=True)
 
     def active(self) -> Optional[RobotProfile]:
         for p in self.profiles:

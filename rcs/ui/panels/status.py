@@ -1,12 +1,19 @@
-"""Status/health dashboard panel."""
+"""Status page: the robot's health at a glance (one line per part, what is
+wrong and what to do), speeds, E-STOP, and the rate of each topic. A
+diagnostic bundle for support is saved from here."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from typing import Callable, Optional
+
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QGroupBox, QLabel, QVBoxLayout, QWidget,
+    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
+from ...core import health
 from ...core.ros_client import RosClient
+
+LEVEL_COLOR = {"ok": "#39d98a", "warn": "#ffb547", "error": "#ff6a6a", "off": "#8b93a7"}
 
 GREEN, RED, AMBER, MUTED = "#39d98a", "#ff6a6a", "#ffb547", "#8b93a7"
 
@@ -46,9 +53,13 @@ _TOPICS = [
 
 
 class StatusPanel(QWidget):
+    bundle_requested = Signal()
+
     def __init__(self, ros: RosClient, parent=None):
         super().__init__(parent)
         self.ros = ros
+        self.health_source: Optional[Callable[[], dict]] = None     # set by the main window
+        self.last_checks: list = []
         self._lin = 0.0
         self._ang = 0.0
         self._connected = False
@@ -75,6 +86,26 @@ class StatusPanel(QWidget):
         self.c_conn.set("offline", RED)
         self.c_estop.set("clear", GREEN)
         root.addLayout(cards)
+
+        hb = QGroupBox("Health")
+        hv = QVBoxLayout(hb)
+        top = QHBoxLayout()
+        self.h_summary = QLabel("—")
+        self.h_summary.setStyleSheet("font-size:15px; font-weight:600;")
+        top.addWidget(self.h_summary, 1)
+        self.bundle_btn = QPushButton("Save diagnostic bundle…")
+        self.bundle_btn.setToolTip("One zip for whoever helps you: the app's log, settings without passwords "
+                                   "or sign-in tokens, events, crash reports and the robot's state now")
+        self.bundle_btn.clicked.connect(self.bundle_requested.emit)
+        top.addWidget(self.bundle_btn)
+        hv.addLayout(top)
+        self.h_grid = QGridLayout()
+        self.h_grid.setHorizontalSpacing(14)
+        self.h_grid.setVerticalSpacing(4)
+        self.h_grid.setColumnStretch(3, 1)
+        hv.addLayout(self.h_grid)
+        self.h_rows: list = []
+        root.addWidget(hb)
 
         box = QGroupBox("Data from the robot")
         g = QGridLayout(box)
@@ -118,7 +149,39 @@ class StatusPanel(QWidget):
         self._connected = ok
         self.c_conn.set("online" if ok else "offline", GREEN if ok else RED)
 
+    def _refresh_health(self) -> None:
+        if self.health_source is None:
+            return
+        cs = health.checks(self.health_source())
+        self.last_checks = cs
+        while len(self.h_rows) < len(cs):
+            i = len(self.h_rows)
+            row = (QLabel("●"), QLabel(), QLabel(), QLabel())
+            row[3].setWordWrap(True)
+            row[3].setProperty("muted", True)
+            for j, w in enumerate(row):
+                self.h_grid.addWidget(w, i, j, Qt.AlignTop)
+            self.h_rows.append(row)
+        for i, row in enumerate(self.h_rows):
+            visible = i < len(cs)
+            for w in row:
+                w.setVisible(visible)
+            if not visible:
+                continue
+            c = cs[i]
+            row[0].setStyleSheet(f"color:{LEVEL_COLOR[c.level]};")
+            row[1].setText(c.title)
+            row[2].setText(c.text)
+            row[2].setStyleSheet(f"color:{LEVEL_COLOR[c.level]};" if c.level in ("warn", "error") else "")
+            row[3].setText(c.hint)
+        word = health.summary(cs)
+        n_bad = sum(1 for c in cs if c.level in ("warn", "error"))
+        self.h_summary.setText({"ok": "All good", "warn": f"{n_bad} thing(s) to look at",
+                                "error": f"{n_bad} problem(s)"}[word])
+        self.h_summary.setStyleSheet(f"font-size:15px; font-weight:600; color:{LEVEL_COLOR[word]};")
+
     def _refresh(self) -> None:
+        self._refresh_health()
         for key, (dot, rate, streaming) in self.rows.items():
             st = self.ros.topic_stats.get(key)
             if not st or st.last_t == 0:

@@ -61,8 +61,35 @@ jobs:
       - name: Why there is no camera picture, 3D map without a map frame
         run: python tests/test_camera_status.py
 
-      - name: Battery frames, staying connected over a bad link, Battery page
+      - name: Battery frames, staying connected, the battery log per boot, Battery page and history
         run: python tests/test_battery.py
+
+      - name: The robot's own E-STOP gate, with the app
+        run: python tests/test_estop.py
+
+      - name: Scheduled missions and run reports
+        run: python tests/test_schedule.py
+
+      - name: Several robots on the Fleet page
+        run: python tests/test_fleet.py
+
+      - name: Robot models (URDF import, wheels in their wells, 2D shape, packs)
+        run: python tests/test_robot_model.py
+
+      - name: Sign-in, roles and audit log through the robot's gateway
+        run: python tests/test_gateway.py
+
+      - name: Versions of the robot side, new releases
+        run: python tests/test_updates.py
+
+      - name: Health checks, diagnostic bundles, crash reports
+        run: python tests/test_diagnostics.py
+
+      - name: Remote alerts (Telegram and e-mail, faked)
+        run: python tests/test_alerts.py
+
+      - name: Going to charge by itself
+        run: python tests/test_charging.py
 
       - name: Responsiveness, reconnect and 3D map under robot-sized traffic
         # shared CI runners are slower than an operator PC: allow longer stalls
@@ -136,6 +163,9 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
             gh release edit "$GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
           else
-            gh release create "$GITHUB_REF_NAME" artifacts/* \
+            # a beta (v0.6.0-beta.1) is a pre-release: "latest" stays on the last stable one
+            pre=""
+            case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+            gh release create "$GITHUB_REF_NAME" artifacts/* $pre \
               --title "RCS $GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
           fi

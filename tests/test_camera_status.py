@@ -164,12 +164,42 @@ def main() -> int:
     s._on_launcher_state(base("running"))
     check("only on the change", not calls)
 
+    print("\n[a saved map sent once, before rosbridge heard it]")
+    mapt = s.profile.topics.map
+    s._subs[mapt] = Sub()
+    calls.clear()
+    nav = lambda state: {"data": json.dumps({"stacks": {"bringup": {"state": "running"},       # noqa: E731
+                                                        "nav": {"state": state}}})}
+    s._on_launcher_state(nav("starting"))
+    s._on_launcher_state(nav("running"))
+    check("Nav2 just up: give the map a moment", not calls, f"{calls}")
+    s._nav_up_t -= 4.0
+    s._on_launcher_state(nav("running"))
+    check("no map 3 s after Nav2 came up: asked again", calls == ["off", mapt], f"{calls}")
+    s._on_launcher_state(nav("running"))
+    check("not every second", len(calls) == 2)
+    s._map_retry_t -= 10.0
+    s._on_launcher_state(nav("running"))
+    check("again 5 s later while none comes", len(calls) == 4)
+    s._on_map({"info": {"width": 0, "height": 0}, "data": []})
+    s._map_retry_t = -1e9
+    calls.clear()
+    s._on_launcher_state(nav("running"))
+    check("map arrived: no more asking", not calls, f"{calls}")
+    s._map_t -= 60.0                    # that map came a minute ago
+    s._on_launcher_state(nav("stopped"))
+    s._on_launcher_state(nav("running"))
+    s._nav_up_t -= 4.0
+    s._on_launcher_state(nav("running"))
+    check("Nav2 started again: the new map is waited for again", calls == ["off", mapt], f"{calls}")
+
 
     empty = RosClient(profile=RobotProfile.new("t"))
     check("no TF at all: map, reported as an error by the caller", empty._world_frame() == "map")
 
     print("\n[robot model on the 3D Map]")
-    tri, col = robot_model.load()
+    model = robot_model.load()
+    tri, col = model.triangles, model.colors
     pts = tri.reshape(-1, 3)
     check("loads", len(tri) > 1000 and len(col) == len(tri))
     check("metres, the size of the robot", 0.8 < np.ptp(pts[:, 0]) < 1.0 and 0.5 < np.ptp(pts[:, 1]) < 0.65)
@@ -183,8 +213,19 @@ def main() -> int:
     w2.show()
     v = w2.p_3d
     check("the 3D page has it", v.mesh is not None and v.uses_model())
-    v.set_robot_footprint(0.25, 0.20)
+    prof = w2.profiles.active()
+    prof.limits.footprint_half_length, prof.limits.footprint_half_width = 0.25, 0.20
+    w2._apply_profile_to_panels(prof)
     check("a smaller robot gets its box", not v.uses_model())
+    prof.model = "hinson"
+    w2._apply_profile_to_panels(prof)
+    check("unless the Hinson is chosen for it", v.uses_model())
+    prof.model, prof.limits.footprint_half_length, prof.limits.footprint_half_width = "auto", 0.45, 0.30
+    w2._apply_profile_to_panels(prof)
+    check("the default profile gets the Hinson", v.uses_model())
+    v.set_robot_model(robot_model.builtin(), "auto")
+    v.set_robot_footprint(0.25, 0.20)
+    check("the page alone: auto follows the footprint", not v.uses_model())
     v.set_robot_footprint(0.45, 0.30)
     w2._show("3d")
     w2.ros.is_connected = lambda: False

@@ -8,6 +8,89 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### v0.6.0-beta.1
+
+A beta: tested on this PC only (mock robots, the robot's own E-STOP and launcher
+on real ROS 2, real Nav2 in simulation, the whole robot side in Gazebo), not on
+the robot yet. v0.5.0 stays the stable download.
+
+**Robot models**
+- **The drive wheels are where they are on the robot**: centred in the body's
+  wheel wells, both sides alike. Before, the robot's URDF put the left wheel
+  outside the body and the right one inside it; the app's model, RViz and
+  Gazebo now all agree. In Gazebo the tyres touch the floor at ±0.195 m
+  (wheel_separation 0.39), so the simulated robot turns about its centre and
+  its odometry no longer drifts on the spot.
+- **The robot seen from above on the 2D maps** (2D Map, Navigation, Missions):
+  its body, drive wheels, casters and sensors, with its footprint dashed around
+  it, in place of a plain rectangle.
+- **A model per robot** (Connection page, Robot model): the Hinson AMR, a box,
+  or a model imported from the robot's URDF (meshes STL, OBJ or DAE; boxes,
+  cylinders, spheres), from one mesh, or from a file another operator exported.
+  It goes into the robot's backups and shares. **Footprint** can now be set on
+  the Connection page, or taken from the model.
+- **Fleet cards** show each robot from above, turned the way it faces and
+  coloured by its state.
+
+**Sign-in and roles** (new robot program `robot/rcs_gateway.py`, see
+robot/README.md): once an admin creates a user on the robot, every app signs in
+and the robot itself passes on only what the user's role may do: viewers watch
+and may stop the robot, operators drive, admins also manage users. An audit
+log on the robot says who did what. Optional `wss://` with the certificate
+pinned on first use. A robot without users works as before.
+
+**Health and support**
+- **Health** on the Status page: each part of the robot green, amber or red,
+  with what to do about it.
+- **Save diagnostic bundle…** (Status page): the app's log, settings without
+  passwords or tokens, events, crash reports and the robot's state, in one zip.
+- Crash reports kept with the settings; the app says when it did not close
+  properly last time.
+- **Going to charge by itself** (Battery page, Charging): below a set charge the
+  mission pauses, the robot drives to its charging place, and charged again the
+  mission goes on from where it was.
+- **Remote alerts** (Events page): Telegram and/or e-mail on errors and, if
+  chosen, warnings, at most once per event every 10 minutes.
+- **New versions**: the app tells you when a newer release is out (asks GitHub
+  once a day, can be turned off), and when the robot side is older than it needs.
+
+**Fixes**
+- Selecting another robot in the Connection list while connected no longer
+  gives the robot being driven that robot's speed limits and size.
+- The tests no longer write to your own settings (one of them replaced the
+  first robot of the list with a test robot).
+- **Robot side:** a rosbridge stopped with a plain `pkill` keeps port 9090 with
+  its ROS side shut down, so the app connected and received nothing.
+  `start_rcs_robot.sh` now clears such a leftover before starting rosbridge;
+  stop it with `pkill -INT` (robot/README.md). The E-STOP gate sends a last
+  zero to the drives when it is stopped.
+
+**From the previous work, also in this beta**
+- **E-STOP held by the robot** (`robot/rcs_safety.py`): every velocity command
+  passes it on the way to the drives. Engaged, nothing moves the robot until an
+  operator releases it, through app crashes, Wi-Fi drops and restarts; Nav2
+  goals are cancelled. If the app driving the robot goes silent for 3 s, the
+  robot stops by itself and the app pauses the mission. Bringup from the app
+  now needs it running. **Update the robot side** (`robot/README.md`).
+- **Battery log on the robot**: a file per boot, a row every second straight to
+  the disk, with everything the BMS reports (each cell and its resistance,
+  balancing, alarms, cycles, total Ah, the raw frame once a minute) and the
+  link's state. Kept until you delete it. A boot that ended in a power cut is
+  told apart from a shut down, with the battery's last values.
+- **Battery history** in the app: a chart per boot or a trend over boots, a
+  table of boots and how each ended, deleting a boot's log on purpose.
+- **BMS link**: back within a second or two after a drop, straight to the known
+  BMS with no 12 s scan; why each drop happened is logged; a watchdog restarts
+  the battery service if it hangs; the dongle is opened anew after repeated
+  failures. The drops themselves (every ~30 s, Bluetooth reason 8, link
+  timeout) are not cured: the logs will now say more on the robot.
+- **Schedule**: missions at set times and days, skipped with a reason when the
+  robot is not ready; a report of every run, exported as CSV.
+- **Fleet** page: several robots on one screen, E-STOP for one or all.
+- **A virtual robot in Gazebo** for trying the app without the robot
+  (`sim/gazebo/run_gazebo.sh`, see the README): the Hinson model on a saved
+  map's walls with the robot's own launcher, E-STOP gate, Nav2 and camera.
+
 ### v0.5.0
 
 Everything from the betas below, tested on the real robot with the app (except

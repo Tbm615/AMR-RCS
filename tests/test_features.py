@@ -27,6 +27,10 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# the operator's real profiles and missions stay untouched
+import tempfile  # noqa: E402
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="rcs_test_cfg_")
+os.environ["APPDATA"] = os.environ["XDG_CONFIG_HOME"]
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QVector3D

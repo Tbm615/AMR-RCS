@@ -288,6 +288,16 @@ class TeleopPanel(QWidget):
 
     # ---- input handlers ----
 
+    can_drive = True        # False when the signed-in user is a viewer
+
+    def set_can_drive(self, ok: bool, why: str = "") -> None:
+        self.can_drive = ok
+        self.joy.setEnabled(ok)
+        self.joy.setToolTip("" if ok else why)
+        self.setToolTip("" if ok else why)
+        if not ok:
+            self._jx = self._jy = self._key_lin = self._key_ang = 0.0
+
     def _on_joy(self, x: float, y: float) -> None:
         self._jx = x
         self._jy = y
@@ -350,6 +360,8 @@ class TeleopPanel(QWidget):
         if self._estop:
             lin, ang = 0.0, 0.0
             active = True               # E-stop keeps streaming zeros
+        elif not self.can_drive:
+            lin, ang, active = 0.0, 0.0, False
         else:
             # gamepad wins while its dead-man is held, then the on-screen
             # joystick when touched, then the keys

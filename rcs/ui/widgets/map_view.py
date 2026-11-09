@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsPolygonItem
 import pyqtgraph as pg
 
 from ...core.ros_client import cost_rgba, grid_from_msg, scan_points
+from .robot_shape import RobotShape
 
 
 # occupancy -> rgba. Build once for the whole module.
@@ -164,10 +165,14 @@ class MapView(pg.PlotWidget):
         self.addItem(self.place_dots)
         self._place_labels: list = []
 
+        # the footprint the safety checks use (dashed), and the robot's own
+        # shape from its model, or a box of the footprint (robot_shape.py)
         self.robot_body = pg.PlotDataItem(
-            pen=pg.mkPen("#5a9df6", width=2), fillLevel=None)
-        self.robot_body.setZValue(20)
+            pen=pg.mkPen("#5a9df6", width=1, style=Qt.DashLine), fillLevel=None)
+        self.robot_body.setZValue(20.5)
         self.addItem(self.robot_body)
+        vb = self.getPlotItem().vb
+        self.robot_shape = RobotShape(lambda it: vb.addItem(it, ignoreBounds=True), vb.removeItem, z=20)
         self.robot_arrow = pg.PlotDataItem(pen=pg.mkPen("#5a9df6", width=2))
         self.robot_arrow.setZValue(21)
         self.addItem(self.robot_arrow)
@@ -205,6 +210,7 @@ class MapView(pg.PlotWidget):
         self.setFocusPolicy(Qt.StrongFocus)
 
         self._robot_xy = None
+        self._robot_pose = None
         self._fitted = False
         # floating view buttons (top-left corner of the map)
         from PySide6.QtWidgets import QLabel, QPushButton
@@ -232,6 +238,13 @@ class MapView(pg.PlotWidget):
     def set_robot_footprint(self, half_length: float, half_width: float) -> None:
         self._robot_half_l = half_length
         self._robot_half_w = half_width
+        self.robot_shape.set_model(self.robot_shape.model, half_length, half_width)
+        if self._robot_pose is not None:
+            self.set_robot_pose(*self._robot_pose)
+
+    def set_robot_model(self, model) -> None:
+        """Draw the robot from its model (rcs.core.robot_model), None: a box."""
+        self.robot_shape.set_model(model, self._robot_half_l, self._robot_half_w)
 
     def set_click_mode(self, mode: str) -> None:
         self._click_mode = mode
@@ -298,6 +311,8 @@ class MapView(pg.PlotWidget):
 
     def set_robot_pose(self, x: float, y: float, yaw: float) -> None:
         self._robot_xy = (x, y)
+        self._robot_pose = (x, y, yaw)
+        self.robot_shape.set_pose(x, y, yaw)
         hl, hw = self._robot_half_l, self._robot_half_w
         corners = np.array([
             [hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw], [hl, hw]
@@ -309,7 +324,8 @@ class MapView(pg.PlotWidget):
         # corrupted the heap inside its QPainterPath fast path.
         self.robot_body.setData(np.ascontiguousarray(pts[:, 0]), np.ascontiguousarray(pts[:, 1]))
         # heading arrow
-        reach = self._robot_half_l + 0.35      # sticks out past the front
+        front = self.robot_shape.model.footprint()[0] if self.robot_shape.model is not None else hl
+        reach = front + 0.35                    # sticks out past the front
         self.robot_arrow.setData(
             np.array([x, x + reach * c]), np.array([y, y + reach * s]))
 

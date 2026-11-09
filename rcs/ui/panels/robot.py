@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QVBoxLayout, QWidget,
 )
 
+from ...core.versions import robot_side_note
 from ...core.ros_client import RosClient
 
 GREEN, RED, AMBER, MUTED = "#39d98a", "#ff6a6a", "#ffb547", "#8b93a7"
@@ -171,6 +172,14 @@ class RobotPanel(QWidget):
 
     # Set False in tests (QMessageBox would block offscreen).
     confirm_dialogs = True
+
+    can_operate = True      # False for a signed-in viewer: start, stop, save are greyed out
+
+    def set_can_operate(self, ok: bool, why: str = "") -> None:
+        self.can_operate = ok
+        for b in (self.base.start_btn, self.base.stop_btn, self.nav.start_btn, self.nav.stop_btn, self.save_btn):
+            b.setToolTip("" if ok else why)
+        self._refresh()
 
     def __init__(self, ros: RosClient, parent=None):
         super().__init__(parent)
@@ -425,8 +434,10 @@ class RobotPanel(QWidget):
                 '"Robot setup" in the user guide (robot/start_rcs_robot.sh).')
         else:
             busy = self._state.get("busy")
+            note = robot_side_note(self._state)
             self.banner.setText(f'<span style="color:{GREEN}">●</span> Robot launcher online'
-                                + (f' <span style="color:{AMBER}">· working: {busy}</span>' if busy else ""))
+                                + (f' <span style="color:{AMBER}">· working: {busy}</span>' if busy else "")
+                                + (f'<br><span style="color:{AMBER}">{note}</span>' if note else ""))
         stacks = self._state.get("stacks", {}) if online else {}
         now = self._state.get("time", 0.0)
         waiting = bool(self._pending) or bool(self._state.get("busy"))
@@ -437,7 +448,7 @@ class RobotPanel(QWidget):
                 box.status.setText(f'<span style="color:{MUTED}">● unknown</span>')
         base_up = base in ("running", "external")
         nav_up = nav in ("starting", "running", "external")
-        ok = online and not waiting
+        ok = online and not waiting and self.can_operate
         self.base.start_btn.setEnabled(ok and base in ("stopped", "failed"))
         self.base.stop_btn.setEnabled(ok and base in ("starting", "running", "failed"))
         self.nav.start_btn.setEnabled(ok and base_up and nav != "external")

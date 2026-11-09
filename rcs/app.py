@@ -45,6 +45,11 @@ try:
         _logf.write("UNCAUGHT EXCEPTION:\n")
         traceback.print_exception(exctype, value, tb, file=_logf)
         _logf.flush()
+        try:                            # a report of its own, kept with the settings
+            from .core import diagnostics
+            diagnostics.record_crash(exctype, value, tb)
+        except Exception:  # noqa: BLE001
+            pass
     sys.excepthook = _excepthook
 
     def _thread_excepthook(args):
@@ -102,6 +107,7 @@ def main() -> int:
             win.profiles.upsert(p)
 
     win.show()
+    QTimer.singleShot(4000, win.check_updates)      # once a day, if on (Connection page)
 
     if args.autoconnect:
         prof = win.profiles.active()

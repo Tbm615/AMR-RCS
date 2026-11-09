@@ -2,7 +2,8 @@
 # Bring up a robot-less test stack on this PC so RCS can be driven end to end:
 #   real rosbridge_server (port 9090) + this workspace's Nav2 launch (AMCL,
 #   SmacPlanner2D + MPPI, velocity smoother, CBF safety filter) on a real map
-#   + sim/fake_base.py standing in for the drive/lidar.
+#   + sim/fake_base.py standing in for the drive/lidar, driven through the
+#   robot's own E-STOP gate (robot/rcs_safety.py) as on the robot.
 #
 # Usage: sim/run_sim.sh [map.yaml] [x] [y] [yaw]
 # Env:   AMR_WS     robot workspace (default: ../.. relative to RCS)
@@ -32,7 +33,11 @@ pids=()
 cleanup() { kill "${pids[@]}" 2>/dev/null; wait 2>/dev/null; }
 trap cleanup EXIT INT TERM
 
-python3 "$HERE/fake_base.py" --map "$MAP" --x "$X" --y "$Y" --yaw "$YAW" > "$LOG/fake_base.log" 2>&1 &
+# The robot's E-STOP gate, as on the robot: the base follows what it lets through.
+RCS_ESTOP_FILE="$LOG/estop.json" python3 "$HERE/../robot/rcs_safety.py" > "$LOG/rcs_safety.log" 2>&1 &
+pids+=($!)
+python3 "$HERE/fake_base.py" --map "$MAP" --x "$X" --y "$Y" --yaw "$YAW" \
+    --cmd-topic /rcs/cmd_vel_gated > "$LOG/fake_base.log" 2>&1 &
 pids+=($!)
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090 > "$LOG/rosbridge.log" 2>&1 &
 pids+=($!)

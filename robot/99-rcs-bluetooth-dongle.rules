@@ -1,0 +1,2 @@
+# Lets the battery service (user iop) drive the dongle over USB, see hci_quirks.py
+SUBSYSTEM=="usb", ATTR{idVendor}=="0a12", ATTR{idProduct}=="0001", MODE="0666"

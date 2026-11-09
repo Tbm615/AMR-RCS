@@ -40,7 +40,10 @@ class ExportDialog(QDialog):
                 ("profile", "Robot profile (address, topics, limits)", backup),
                 ("layouts", f"My saved layouts ({counts.get('layouts', 0)})", backup),
                 ("state", "How the app was left (layout, open mission, last positions)", backup),
-                ("events", f"Event log ({counts.get('events', 0)})", backup)):
+                ("events", f"Event log ({counts.get('events', 0)})", backup),
+                ("model", f"Its imported robot model ({counts.get('model', '')})", True)):
+            if key == "model" and not counts.get("model"):
+                continue
             ck = QCheckBox(label)
             ck.setChecked(on)
             v.addWidget(ck)
@@ -88,7 +91,9 @@ class ImportDialog(QDialog):
         for key, label, n in (("missions", "Missions", len(pack.missions)),
                               ("places", "Saved places", len(pack.places)),
                               ("maps", "Maps", len(pack.maps)),
-                              ("layouts", "Saved layouts", len(pack.layouts))):
+                              ("layouts", "Saved layouts", len(pack.layouts)),
+                              ("model", f"Robot model ({pack.model.name if pack.model else ''})",
+                               int(pack.model is not None))):
             if n:
                 ck = QCheckBox(f"{label} ({n})")
                 ck.setChecked(True)
@@ -282,9 +287,16 @@ class DataPanel(QWidget):
     def _can_transfer(self) -> bool:
         return "map_transfer" in (self._state.get("caps") or [])
 
+    can_send = True         # False for a signed-in viewer
+
+    def set_can_send(self, ok: bool, why: str = "") -> None:
+        self.can_send = ok
+        self.send_btn.setToolTip("Copy the selected map to the connected robot" if ok else why)
+        self._sync()
+
     def _sync(self) -> None:
         ok = self._connected and self._can_transfer() and not self.transfer.busy
-        self.send_btn.setEnabled(ok and self._selected(self.pc_list) is not None)
+        self.send_btn.setEnabled(ok and self.can_send and self._selected(self.pc_list) is not None)
         self.get_btn.setEnabled(ok and self._selected(self.robot_list) is not None)
         self.del_btn.setEnabled(self._selected(self.pc_list) is not None)
         if not self._connected:

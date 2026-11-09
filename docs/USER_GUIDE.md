@@ -20,10 +20,11 @@ through `rosbridge_server`, which runs on the robot.
 - [10. Navigation page](#10-navigation-page)
 - [11. Missions, checkpoints and loop routes](#11-missions-checkpoints-and-loop-routes)
 - [12. Status, Camera, 3D Map, Logs and Events](#12-status-camera-3d-map-logs-and-events)
-- [13. Several robots](#13-several-robots)
-- [14. Back up, share and copy maps (Data page)](#14-back-up-share-and-copy-maps-data-page)
-- [15. Settings files and advanced options](#15-settings-files-and-advanced-options)
-- [16. Troubleshooting](#16-troubleshooting)
+- [13. Schedule: missions at set times](#13-schedule-missions-at-set-times)
+- [14. Several robots](#14-several-robots)
+- [15. Back up, share and copy maps (Data page)](#15-back-up-share-and-copy-maps-data-page)
+- [16. Settings files and advanced options](#16-settings-files-and-advanced-options)
+- [17. Troubleshooting](#17-troubleshooting)
 
 ---
 
@@ -147,6 +148,60 @@ On minimal desktop installs Qt may need `libxcb-cursor0`
    robot's bringup; change them only if your launch files differ.
 5. Click **Save changes**, then **Connect**.
 
+### Signing in
+
+A robot whose robot side has the gateway (robot/README.md, *Sign-in and
+roles*) asks who you are: **Connect** opens **Sign in** (user and password, given
+by an admin). The app keeps what the robot gives back for 30 days, so you sign
+in once per PC; the **Sign-in** box on the Connection page shows who you are
+and your role, and **Sign out** ends it.
+
+- **viewer**: sees everything and may stop the robot (E-STOP, cancel a goal),
+  but not drive: Teleop, mission start and Robot programs are greyed out.
+- **operator**: drives, sends goals, runs missions, starts programs, saves and
+  sends maps, releases the E-STOP.
+- **admin**: also **Users and audit log…**: add users, change roles, set a new
+  password, sign someone out everywhere, and read what was done with the robot
+  and by whom (filter, export as CSV).
+
+Something your role may not do is not sent, and the status bar says why. The
+robot refuses it anyway, whatever app sends it. If an admin signs you out or
+changes your password, the app stops and asks you to sign in again; a new role
+applies at once.
+
+With **Use secure WebSocket (wss://)**, the first sign-in shows the robot's
+certificate fingerprint: compare it with the one printed on the robot. The app
+then refuses any other certificate; **Forget certificate** if it was replaced on
+purpose. A robot without the gateway needs no sign-in, as before.
+
+### The robot's model and footprint
+
+Lower on the same page, **Robot model** sets how this robot is drawn on the 3D
+Map, the 2D maps and its Fleet card, with a preview from above:
+
+- **Automatic** (the default): the Hinson AMR if the footprint is about its
+  size, otherwise a box of the footprint.
+- **Hinson AMR**: the model that comes with the app, whatever the footprint.
+- **A box of the footprint**.
+- **Imported model**: click **Import URDF / mesh…** and pick
+  - a **URDF** (`.urdf`): its meshes (STL, OBJ or DAE) are found from
+    `package://` names in the folders around it, boxes, cylinders and spheres
+    are drawn too. A `.xacro` needs ROS 2 on this PC (the `xacro` command);
+    otherwise expand it on the robot first: `xacro robot.urdf.xacro > robot.urdf`.
+  - one **STL / OBJ / DAE**: the whole robot, its origin taken as base_link,
+    millimetres recognised.
+  - an **RCS model** (`.npz`) another operator gave you with **Export…**.
+
+  Links named `*wheel*` are drawn as drive wheels, `*caster*` as casters, and
+  lidar, camera and other sensors in their own colour. What could not be used
+  (a mesh not found) is listed under the preview; the rest is still drawn.
+  The model is kept with the robot's data and goes into its backups.
+
+**Footprint** (length × width) is the rectangle the lidar clearance bars on the
+Teleop page measure from; it is drawn dashed around the robot on the maps.
+**From model** sets it to the smallest rectangle centred on base_link that holds
+the whole model. It applies with **Save changes**.
+
 When it works, the text under the buttons turns green
 (`connected — ws://…`) and the status bar at the bottom shows
 **● connected**. If the robot reboots or Wi-Fi drops, the app keeps
@@ -156,6 +211,15 @@ reconnecting every 2 seconds until you click **Disconnect**.
 
 Tick **Connect to the last robot when the app starts** on the Connection page
 to skip this step next time.
+
+**New versions.** With **Tell me when a new version of RCS is out** ticked (the
+default), the app asks GitHub once a day for the list of releases (nothing
+about your PC is sent) and shows **⬆ RCS vX is out** in the status bar, a link
+to the download. A beta is offered newer betas too; a release only releases.
+
+**The robot side's version.** The Robot programs page says when the robot's
+`robot/` files are older than this app needs, or newer than the app: copy the
+matching release's `robot/` folder over (robot/README.md).
 
 ## 5. The main window
 
@@ -210,7 +274,9 @@ All map views share the same controls:
 - The map coordinates under the mouse show at the bottom left. On the 2D Map,
   **Measure distance** (in the Tools list) draws a ruler: press and drag
   between two points; Esc clears it.
-- Blue rectangle and line: the robot footprint and its heading.
+- The robot seen from above, from its model: body in blue, drive wheels dark,
+  casters orange, lidar and camera cyan. Dashed rectangle: its footprint. Blue
+  line: its heading. A robot without a model is a blue box.
 - Red dots: lidar points. Green line: path planned by Nav2.
 - Green arrow: the current Nav2 goal and the heading the robot will have.
 - Orange dots and arrows: waypoints of the open mission with their heading,
@@ -314,10 +380,25 @@ Click **● E-STOP** (sidebar or Teleop page). While engaged:
 Click the button again to release it. If another console publishes
 `/amr/estop`, RCS mirrors that state.
 
-> **Important:** this is a *software* stop over Wi-Fi. Nothing on the robot
-> enforces `/amr/estop` today, and another publisher (for example the
-> gamepad) can still send commands. If the network drops, the app cannot
-> stop the robot. Always keep the robot's hardware E-stop within reach.
+**The robot holds the E-STOP itself** (`rcs_safety.py`, see
+`robot/README.md`). Every velocity command, from Nav2, the gamepad or any app,
+passes through it on the robot, so:
+
+- once engaged, nothing moves the robot, whatever else publishes, until an
+  operator releases it from an app;
+- it stays engaged if the app closes, the Wi-Fi drops, or the robot restarts;
+- an E-STOP engaged on the robot (by another app, the web console or the
+  Fleet page) shows in every app connected to it.
+
+**If the app is lost while it drives the robot** (a mission, a goal it sent,
+or teleop) — Wi-Fi gone, PC asleep, app crashed — the robot stops by itself
+after 3 s: it cancels the Nav2 goal and holds still for a moment. The app
+pauses the mission and says so in Events; resume it once you see the robot
+again. An app that only watches never stops the robot.
+
+> **Important:** this is still a *software* stop. Bringup started by hand on
+> the robot (not from the Robot programs page) is not guarded. Always keep
+> the robot's hardware E-stop within reach.
 
 ---
 
@@ -457,6 +538,17 @@ waypoint up to 3 times, then stops the mission and says why.
 - **Status:** connection, linear and angular speed (from `/odom`), E-STOP
   state, and the message rate of each topic. A rate of `—` means nothing
   is arriving on that topic: check the robot side.
+  - **Health**: one line per part of the robot (connection, sign-in, robot
+    side version, launcher, base, navigation, odometry, lidar, localization,
+    E-STOP, battery, the robot's disk, camera), green, amber or red, with what
+    to do when it is not green, and a one-line summary on top.
+  - **Save diagnostic bundle…**: one zip to give whoever helps you: the app's
+    log, its settings and robot profiles with every password and sign-in token
+    taken out, the open robot's events, missions and runs, crash reports, and
+    the robot's state as the app sees it now. Nothing is sent anywhere.
+  - If the app did not close properly last time (a crash, killed, a power
+    cut), the event log says so when it starts. Crash reports are kept with the
+    settings (`crashes/`, the last 50).
 - **Camera:** live image from `/camera/color/image_raw/compressed` (JPEG),
   limited to about 10 frames/s to spare Wi-Fi. The app only receives it
   while the Camera page is open.
@@ -527,8 +619,37 @@ page, and the newest event also shows for a few seconds at the bottom left.
 The last 2000 events of each robot are kept in its `events.csv`, so they are
 still there after a restart.
 
-The robot is drawn from its real CAD model, wheels and camera included. A profile
-whose footprint is a different size gets a plain box of that size instead.
+The 3D Map draws the robot from its model (Connection page, **Robot model**):
+the Hinson AMR from its CAD files, drive wheels in their wells and the camera
+included, or a model you imported. A robot without one gets a plain box of its
+footprint.
+
+### Going to charge by itself
+
+On the Battery page, **Charging**: tick **Go to charge by itself**, set the
+charge to go below (25% by default) and to go back to work above (90%), and
+choose a saved place in front of the charger (Navigation page, saved places).
+Below the charge, a running mission pauses and the robot drives to that place;
+charged again, the mission goes on from the waypoint it was at. The robot has
+to charge there by itself (a dock, or someone plugging it in): the page says
+whether the battery's current shows it charging. If Nav2 cannot get there, it
+tries three times, then says so (an error, also sent by remote alerts). While
+the E-STOP is engaged it waits; driving the robot yourself, sending a goal or
+starting a mission hands it back to you.
+
+### Remote alerts
+
+**Remote alerts…** on the Events page sends errors (and, ticked, warnings) of
+the event log to Telegram and/or e-mail, from this PC while RCS runs: E-STOP,
+a robot that stopped itself, a failed mission, the link lost, low battery.
+The same event goes out at most once every 10 minutes, and at most 20
+messages an hour. **Send a test message** checks the settings; a message
+that cannot be sent is noted in the event log.
+
+- Telegram: create a bot with @BotFather, paste its token, and the id of the
+  chat or group it should write to (send the bot a message first).
+- E-mail: your mail server (for Gmail: `smtp.gmail.com`, port 587, STARTTLS,
+  an app password), and the address(es) to send to.
 
 ### Battery
 
@@ -546,9 +667,69 @@ nothing it does can change a setting of the BMS.
 If the page says the robot's Bluetooth hears no device at all, check its antenna,
 or fit a USB Bluetooth adapter near the battery (`robot/README.md`).
 
+**Now** shows everything the BMS reports: each cell with its resistance, the
+average cell, balancing, total Ah discharged, how long the BMS has been
+running, and alarm bits if any are set. Above it, a warning when the robot's
+last boot **ended without a clean stop** (a power cut or a crash), with the
+battery's last values before it, and when the robot's disk is getting full.
+
+**History** is the robot's battery log: one file per time the robot was
+switched on, one row every second, written to its disk at once, so the last
+seconds before a power cut are in it.
+
+- **Boot:** pick one boot to see it over time, or **All boots: trend** for a
+  point per boot (lowest charge, lowest voltage, largest cell difference,
+  hottest…), to see the battery age over weeks.
+- The buttons pick what the chart shows: charge, voltage, current, cell
+  difference, temperature, MOS temperature. One measure at a time. Hover for
+  the value at a time. Gaps are times the BMS was not heard.
+- The table lists every boot: when, how long, charge from → to, lowest
+  voltage, largest cell difference, hottest, reconnects, and **how it
+  ended** (shut down, or power cut / crash at what time with what battery).
+  Double-click a row to open it.
+- The running boot follows on its own while the page is open.
+- Boots are copied to this PC as you open them and stay there, so they can
+  be looked at without the robot.
+- **Nothing is deleted by itself**, on the robot or on this PC. **Delete
+  this boot's log…** deletes one boot, on both, after you confirm. The running
+  boot cannot be deleted.
+
+The files themselves are plain CSV, in `~/tbm_test/battery_log/` on the robot
+and in the robot's folder on this PC (Data page shows where); every column is
+described in `robot/README.md`.
+
 ---
 
-## 13. Several robots
+## 13. Schedule: missions at set times
+
+The **Schedule** page starts missions by themselves.
+
+1. **Add…**: pick the mission, the time, the days, and the least battery
+   charge it needs (0 = do not check). **On / off** pauses a schedule.
+2. At that time, if the robot is ready, the mission starts from its first
+   waypoint, exactly as **Start** would.
+
+The robot is ready when: the app is open and connected to that robot,
+navigation is running, E-STOP is off, no other mission runs, the battery is
+known and at least the charge asked for, and the mission is for the map Nav2
+runs on. Otherwise the run is **skipped**, and the report says why.
+
+- Schedules run **only while this app is open** and connected: the missions
+  are driven from the app. A time that passed while the app was closed, or
+  while the PC was asleep, is not made up for later.
+- Times are this PC's local time. Each robot has its own schedules.
+
+**Run reports** lists every run, by hand or by the schedule: when, which
+mission, who started it, the result (complete, stopped, failed, skipped,
+interrupted), how long, waypoints reached, laps, retries, distance driven,
+battery before → after, and why it ended. Select one to see what happened
+during it, step by step. **Export CSV…** saves them all. Reports are kept
+until you delete the file; a run cut short by a crash of the app shows as
+*interrupted*.
+
+---
+
+## 14. Several robots
 
 Each robot is a profile on the **Connection** page.
 
@@ -572,13 +753,33 @@ layout, open mission, saved map or SLAM, last position on each map.
 
 Removing a robot from the list leaves its data on the disk.
 
+### Fleet page: watch them all
+
+The **Fleet** page shows every robot of the list as a card. Tick **Watch** on
+the ones to follow (remembered). Each watched robot gets a light connection of
+its own: battery, programs, E-STOP, speed and Nav2's state, no maps or camera,
+so watching many costs little. The robot you drive keeps its full connection.
+
+Each card shows the robot from above, from its own model, turned the way it
+faces (on the map when AMCL runs, otherwise by its odometry; the tooltip says
+which) and coloured by how it is: green fine, amber something to look at, red
+offline or E-STOP, grey not watched. An arrow shows when it drives forward or
+back.
+
+- **Open** connects the app to that robot to drive it.
+- **E-STOP** on a card, or **E-STOP all watched**, engages the E-STOP of those
+  robots. It only engages: release it on that robot's own pages, once you know
+  it is safe. The result line says which robots it reached; a robot that is
+  offline cannot be reached.
+- A card also says when the robot last stopped itself because it lost an app.
+
 **After updating from v0.5.0-beta.1 or older:** your missions and places are
 copied to every robot, because the old list does not say which robot each one
 was for. Delete what does not belong. The old files stay as `*.migrated`.
 
 ---
 
-## 14. Back up, share and copy maps (Data page)
+## 15. Back up, share and copy maps (Data page)
 
 **Back up…** saves everything about the open robot in one `.rcspack` file.
 **Share…** starts with only what is useful to someone else: missions, places
@@ -596,6 +797,8 @@ way you like: a shared folder, a USB stick, a chat.
 - Importing into a robot is refused while its mission runs.
 - Speed limits in a file are held to what the Connection page allows. **Check
   them before driving a robot you imported.**
+- A robot's imported model goes in its backups and, ticked, in what you share.
+  Imported, it is used unless the robot has an imported model already.
 
 **Maps.** Maps on this PC are shared by all robots. To give a map to another
 robot: select it under *Maps on the robot*, **Copy to this PC**, connect to the
@@ -617,7 +820,7 @@ before this version, there is no map to compare: check it yourself.
 
 ---
 
-## 15. Settings files and advanced options
+## 16. Settings files and advanced options
 
 | | Linux | Windows |
 |---|---|---|
@@ -631,7 +834,8 @@ closed):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `limits.footprint_half_length` / `_half_width` | 0.45 / 0.30 m | robot rectangle on the maps |
+| `limits.footprint_half_length` / `_half_width` | 0.45 / 0.30 m | footprint (also on the Connection page) |
+| `model` | `auto` | `auto`, `hinson`, `box` or `imported` (Connection page, Robot model) |
 | `limits.laser_offset_x` | 0.40 m | lidar position, used only if `/tf_static` has no `laser_frame` |
 | `limits.image_throttle_ms` | 100 | minimum time between camera frames |
 | `limits.cloud_throttle_ms` | 500 | minimum time between depth frames / point clouds for the 3D map |
@@ -648,7 +852,7 @@ rcs --host 192.168.10.10:9090 --autoconnect
 
 ---
 
-## 16. Troubleshooting
+## 17. Troubleshooting
 
 **No picture on Camera or 3D Map**
 

@@ -19,6 +19,10 @@ HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# the operator's real profiles and missions stay untouched
+import tempfile  # noqa: E402
+os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp(prefix="rcs_test_cfg_")
+os.environ["APPDATA"] = os.environ["XDG_CONFIG_HOME"]
 
 import asyncio
 from PySide6.QtCore import QTimer

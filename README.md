@@ -21,8 +21,13 @@ WebSocket.
   terminal on the robot.
 - **Teleop:** on-screen joystick or keyboard (W/A/S/D, arrows), with speed
   limits. Publishes only while you drive, so it never blocks Nav2.
-- **Software E-STOP:** cancels the Nav2 goal and the mission, streams zero
-  velocity and publishes `/amr/estop` ([limits](#safety-notes)).
+- **Sign-in and roles:** with the robot's gateway, every app signs in; viewers
+  watch, operators drive, admins manage users. The robot enforces it and keeps
+  an audit log of who did what. Optional `wss://` with certificate pinning.
+- **E-STOP held by the robot:** every velocity command passes the robot's own
+  gate, which latches the E-STOP (through restarts), cancels Nav2, and stops
+  the robot by itself if the app driving it goes silent for 3 s
+  ([limits](#safety-notes)).
 - **2D map:** occupancy grid, lidar points (aligned through `/tf_static`),
   robot footprint, planned path, global/local costmaps. Press and drag an
   arrow (like RViz's 2D Goal Pose) to send a goal with its heading, set the
@@ -32,6 +37,8 @@ WebSocket.
 - **Missions:** ordered waypoints (checkpoints) with tolerance and dwell,
   loop routes, play / pause / stop; automatic retry when Nav2 drops or
   aborts a goal.
+- **Schedule:** missions that start by themselves at set times and days, if
+  the robot is ready (battery, navigation, E-STOP); a report of every run.
 - **3D map:** a colored 3D map built live from the camera's depth + color
   images, each frame placed with the TF at its own timestamp; save / open
   PLY (also opens `save_run`'s `cloud3d.ply`).
@@ -39,9 +46,23 @@ WebSocket.
   log and the state the app was left in. Back it all up to one file, or share
   missions, places and maps with other operators. Copy maps between the PC and
   the robot.
-- **The real robot in 3D:** its CAD model on the 3D Map, placed from the URDF.
+- **Each robot drawn as it is:** the Hinson AMR's CAD model (drive wheels in
+  their wells) on the 3D Map, seen from above on the 2D maps and on its Fleet
+  card. Another robot gets its own model, imported from its URDF (meshes STL,
+  OBJ, DAE) or a mesh, kept with its data and shared in its packs.
 - **Battery:** the robot stays connected to its JK-BMS over Bluetooth, so charge,
-  each cell and temperatures can be watched from anywhere on the network.
+  each cell and temperatures can be watched from anywhere on the network. The
+  robot logs everything the BMS reports every second, a file per boot, kept
+  until you delete it: charts per boot and over many boots, and how each boot
+  ended (shut down, or a power cut).
+- **Fleet:** watch several robots on one screen, each drawn facing the way it
+  faces and coloured by its state, with an E-STOP for all.
+- **Going to charge by itself:** below a set charge the mission pauses, the
+  robot drives to its charging place, and the mission goes on once charged.
+- **Remote alerts:** Telegram or e-mail when something goes wrong.
+- **Health and support:** the Status page says what is wrong with the robot and
+  what to do; one click saves a diagnostic bundle (no secrets in it); crash
+  reports; a notice when a new release is out.
 - **Camera** (compressed JPEG), received only while its page is open to save
   Wi-Fi, **Status** (speeds, per-topic rates) and **Logs** (`/rosout`).
 - Stays responsive on Windows: connecting never blocks the window, heavy
@@ -72,9 +93,20 @@ python -m rcs
 | `tests/test_data.py` | nothing (mock rosbridge running the robot's real `map_exchange.py`) | per-robot data, moving from older versions, what comes back after a crash and that nothing moves by itself, packs, hostile packs, copying maps with lost messages |
 | `tests/test_real_launcher.py` | ROS 2 Humble and rosbridge on the PC | the same map copies through the real `rcs_launcher.py` and real rosbridge, in a temporary workspace |
 | `tests/test_camera_status.py` | nothing | saying why there is no picture, 3D map before a map frame exists, static transforms asked for again |
-| `tests/test_battery.py` | nothing (fake Bluetooth backend) | JK-BMS frames, lost pieces, frames that do not add up, staying connected through dropouts and silence, read commands only, Battery page |
+| `tests/test_battery.py` | nothing (fake Bluetooth backend) | JK-BMS frames (all fields, checked on a real frame), lost pieces, frames that do not add up, staying connected through dropouts and silence with no scan, read commands only, the battery log (a row a second on the disk, power cuts, kept for good, fetched and deleted by name only), watchdog, History and Battery pages |
+| `tests/test_estop.py` | nothing (mock rosbridge running the real `estop_gate.py`) | E-STOP latched on the robot and through restarts, the app losing its link while driving, released only on purpose |
+| `tests/test_estop_ros.py` | ROS 2 Humble on the PC | the real `rcs_safety.py` node: nothing passes while engaged or while it is down, Nav2 cancelled, stop after a lost heartbeat, bringup refused without it |
+| `tests/test_schedule.py` | nothing | schedule times, skipped runs and why, run reports through the real mission executor |
+| `tests/test_fleet.py` | nothing (two mock robots) | the Fleet page, battery per robot, E-STOP all, offline robots |
+| `tests/test_gateway.py` | nothing (the real gateway in front of a mock rosbridge) | users, passwords, tokens, the rules per role, refusals, the audit log, guessing locked out, wss://, and the app through it: sign-in, greyed-out controls, a new role or a sign-out while connected, users and audit for admins |
+| `tests/test_updates.py` | nothing (GitHub's answer made up) | versions, a robot side older or newer than the app, the new-release notice and its daily limit |
+| `tests/test_diagnostics.py` | nothing | health checks, the diagnostic bundle (no tokens or passwords in it), crash reports, an app that did not close properly |
+| `tests/test_alerts.py` | nothing (Telegram and mail faked) | which events go out, not too often, failures noted without looping, no bot token in bundles |
+| `tests/test_charging.py` | nothing (battery and Nav2 made up) | going to charge below the set charge, the mission paused and resumed, retries, E-STOP, the operator taking over |
+| `tests/test_robot_model.py` | nothing (URDF, STL, OBJ, DAE written by the test) | the Hinson's drive wheels in their wells (and the workspace URDF, if there), URDF import, files from anyone, the 2D shape and Fleet icon, a model per robot, packs, another robot selected while connected |
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
 | `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
+| `tests/test_gazebo.py` | ROS 2 Humble and Gazebo 11, run by `sim/gazebo/run_gazebo.sh --test` | the whole robot side in Gazebo against the truth: Robot programs, teleop, turning on the spot about the robot's centre, clearance, goals, E-STOP, the robot stopping itself when the app is lost, missions, camera and 3D map, SLAM |
 
 v0.2.2 was also tested on the real robot over Wi-Fi: live map from
 slam_toolbox, costmaps, camera, point cloud, goals with heading, cancel,
@@ -98,6 +130,17 @@ cancel, E-stop while driving, and a looping mission.
 
 If `rosbridge_suite` is not installed via apt, build it into a separate
 workspace and pass it as `BRIDGE_WS=/path/to/ws`.
+
+### Virtual robot in Gazebo (`sim/gazebo/`)
+
+`sim/gazebo/run_gazebo.sh` puts the Hinson model (the robot's own URDF, through
+`make_urdf.py`) in Gazebo 11 on the walls of a saved map or a test building,
+with the real rosbridge, `rcs_launcher.py`, the robot's E-STOP gate, scan
+filter, Nav2 and CBF filter, then opens RViz and the app already connected.
+Start bringup and Nav2 from the Robot programs page as on the robot.
+`--test` runs `tests/test_gazebo.py`; `--headless` has no Gazebo window; `--help`
+lists the rest. It runs on ROS domain 77, loopback only, away from the real
+robot, and keeps the app's settings in `/tmp/rcs_gazebo/app`.
 
 ## Build standalone executable
 
@@ -133,12 +176,12 @@ from the app. Setup: [`robot/README.md`](robot/README.md).
 
 ## Safety notes
 
-- The app's **E-STOP is software**: it cancels the Nav2 goal, stops the
-  running mission, publishes `/amr/estop=true` and keeps sending zero
-  velocity on `/cmd_vel_safe`. Nothing on the robot consumes `/amr/estop`
-  today, and the driver follows the latest message on `/cmd_vel_safe`, so
-  another publisher (e.g. the gamepad) can still move the robot. Keep the
-  hardware E-stop within reach.
+- The **E-STOP is software, held on the robot** by `robot/rcs_safety.py`:
+  the drives follow only what it lets through, so once engaged no publisher
+  (Nav2, gamepad, another app) can move the robot until an operator releases
+  it. If it is not running, nothing reaches the drives. Bringup started by
+  hand on the robot, not from the app, is not guarded. Keep the hardware
+  E-stop within reach.
 - Teleop only publishes while you are driving (plus 0.3 s of zero commands
   when you let go), so it never blocks Nav2.
 - Teleop goes to `/cmd_vel_safe` and bypasses the CBF filter, like the

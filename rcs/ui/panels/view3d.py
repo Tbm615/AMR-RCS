@@ -205,6 +205,9 @@ class View3DPanel(QWidget):
         self.source_hint = ""           # set by the main window: topics being recorded
         self.camera_problem = ""        # set by the main window: why no frames arrive
         self.robot_half_l, self.robot_half_w, self.robot_h = 0.45, 0.30, 0.35
+        self.model = None               # rcs.core.robot_model.Model, or None: the box
+        self._model_kind = "auto"
+        self.mesh = None                # the robot's real body, when it has one
 
         v = QVBoxLayout(self)
         v.setContentsMargins(8, 8, 8, 8)
@@ -242,13 +245,7 @@ class View3DPanel(QWidget):
         self.box.setSize(2 * self.robot_half_l, 2 * self.robot_half_w, self.robot_h)
         self.box.hide()
         self.view.addItem(self.box)
-        self.model = robot_model.load()
-        self.mesh = None                # the robot's real body, when it is this robot
-        if self.model is not None:
-            md = gl.MeshData(vertexes=self.model[0], faceColors=self.model[1])
-            self.mesh = gl.GLMeshItem(meshdata=md, smooth=False, shader="shaded", glOptions="opaque")
-            self.mesh.hide()
-            self.view.addItem(self.mesh)
+        self.set_robot_model(robot_model.builtin(), "auto")
         self.heading = gl.GLLinePlotItem(pos=np.zeros((2, 3), np.float32), color=(0.35, 0.62, 0.96, 1),
                                          width=3, antialias=True)
         self.view.addItem(self.heading)
@@ -477,8 +474,35 @@ class View3DPanel(QWidget):
         col[:, 3] = 1.0
         self.scatter.setData(pos=np.ascontiguousarray(xyz), color=col, size=float(self.psize.value()))
 
+    def set_robot_model(self, model, kind: str = "auto") -> None:
+        """The robot's body from its model (None: a box of its footprint). With
+        kind "auto" the model is shown only while the footprint is its size."""
+        self._model_kind = kind
+        if model is self.model:
+            if HAVE_GL:
+                self._show_body(self.ck_robot.isChecked() and self._robot is not None)
+            return
+        self.model = model
+        if not HAVE_GL:
+            return
+        if self.mesh is not None:
+            self.view.removeItem(self.mesh)
+            self.mesh = None
+        if model is not None:
+            md = gl.MeshData(vertexes=model.triangles, faceColors=model.colors)
+            self.mesh = gl.GLMeshItem(meshdata=md, smooth=False, shader="shaded", glOptions="opaque")
+            self.mesh.hide()
+            self.view.addItem(self.mesh)
+        if hasattr(self, "ck_robot"):
+            if self._robot is not None:
+                self.update_robot_pose(*self._robot)
+            else:
+                self._show_body(False)
+
     def uses_model(self) -> bool:
-        return self.mesh is not None and robot_model.fits(self.model[0], self.robot_half_l, self.robot_half_w)
+        if self.mesh is None or self.model is None:
+            return False
+        return self._model_kind != "auto" or robot_model.fits(self.model, self.robot_half_l, self.robot_half_w)
 
     def _show_body(self, on: bool) -> None:
         model = self.uses_model()
@@ -514,9 +538,12 @@ class View3DPanel(QWidget):
                 self.mesh.rotate(math.degrees(yaw), 0, 0, 1)
                 self.mesh.translate(x, y, 0)
             self._show_body(True)
-            reach = self.robot_half_l + 0.4
-            self.heading.setData(pos=np.array([[x, y, self.robot_h], [x + reach * math.cos(yaw),
-                                               y + reach * math.sin(yaw), self.robot_h]], np.float32))
+            if self.uses_model():
+                reach, h = self.model.footprint()[0] + 0.4, self.model.height() + 0.02
+            else:
+                reach, h = self.robot_half_l + 0.4, self.robot_h
+            self.heading.setData(pos=np.array([[x, y, h], [x + reach * math.cos(yaw),
+                                               y + reach * math.sin(yaw), h]], np.float32))
         if self.follow.isChecked():
             self.view.opts["center"] = Vector(x, y, 0)
             self.view.update()

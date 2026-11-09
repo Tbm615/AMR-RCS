@@ -14,31 +14,45 @@ from PySide6.QtWidgets import (
 
 from .. import APP_NAME, __version__
 from ..core.battery import alarm, live
+from ..core.battery_history import BatteryLogs
 from ..core.camera_status import camera_problem, usb_problem
 from ..core.clearance import compute_clearance
 from ..core.events import EventLog
+from ..core.fleet import FleetMonitor
 from ..core.map_transfer import MapTransfer
 from ..core.maps import MapLibrary
 from ..core.mission import MissionStore
 from ..core.pack import (
-    SUFFIX, ImportResult, export_pack, import_as_new_robot, import_into, merge_layouts, read_pack,
+    SUFFIX, ImportResult, export_pack, import_as_new_robot, import_into, install_model, merge_layouts,
+    read_pack,
 )
 from ..core.places import PlaceStore
 from ..core.profile import ProfileStore, RobotProfile, load_settings, save_settings
+from ..core import diagnostics
+from ..core.alerts import Alerts
+from ..core.charging import ChargeConfig, ChargeKeeper
+from ..core import gateway as gwc
+from ..core import versions
+from ..core import permissions
+from ..core import robot_model
 from ..core.robot_data import RobotState, migrate_legacy, robot_dir
 from ..core.ros_client import RosClient, quat_to_yaw
+from ..core.runs import RunLog
+from ..core.schedule import Scheduler, ScheduleStore
 from ..core.sound import Sounds
 from .panels.battery import BatteryPanel
 from .panels.camera import CameraPanel
 from .panels.connection import ConnectionPanel
 from .panels.data import DataPanel, ExportDialog, ImportDialog
 from .panels.events import EventsPanel
+from .panels.fleet import FleetPanel
 from .panels.logs import LogsPanel
 from .panels.map2d import Map2DPanel
 from .panels.mission import MissionPanel
 from .panels.navigation import NavigationPanel
 from .panels.status import StatusPanel
 from .panels.robot import RobotPanel
+from .panels.schedule import SchedulePanel
 from .panels.teleop import TeleopPanel
 from .panels.view3d import View3DPanel
 from .workspace import PRESETS, Workspace
@@ -57,6 +71,8 @@ PAGES = [
     ("events", "Events"),
     ("data", "Data"),
     ("battery", "Battery"),
+    ("schedule", "Schedule"),
+    ("fleet", "Fleet"),
 ]
 F_KEY_PAGES = 11        # F1..F11: F12 is E-STOP and must stay E-STOP
 
@@ -97,12 +113,18 @@ class MainWindow(QMainWindow):
         self.events = EventLog(folder / "events.csv")
         self.place_store = PlaceStore(folder / "places.json")
         self.robot_state = RobotState(folder / "state.json")
+        self.runs = RunLog(folder / "runs.json")
+        self.schedules = ScheduleStore(folder / "schedules.json")
+        self.fleet = FleetMonitor(self)
         self.library = MapLibrary()
         self.settings = load_settings()
         self.sounds = Sounds()
         self.sounds.enabled = bool(self.settings.get("sound", True))
+        self._alert_results: list = []      # (ok, text) from the sending thread, logged on the GUI thread
+        self.alerts = Alerts(self.settings.get("alerts") or {}, report=lambda ok, t: self._alert_results.append((ok, t)))
         self.ros = RosClient(profile=self.profiles.active())
         self.tf = self.ros.tf            # filled on the network thread
+        self.battery_logs = BatteryLogs(self.ros, folder / "battery_log", self)
 
         self._robot_x = 0.0
         self._robot_y = 0.0
@@ -131,6 +153,19 @@ class MainWindow(QMainWindow):
 
         self._build()
         self._wire()
+        self._unclean = diagnostics.start_session()     # the last run never closed: crash, kill, power cut
+        if self._unclean:
+            started = time.strftime("%Y-%m-%d %H:%M", time.localtime(self._unclean.get("started", 0)))
+            self._log("warn", "App", f"RCS did not close properly last time (started {started}). If something "
+                      "went wrong, save a diagnostic bundle on the Status page.")
+        self.charger = ChargeKeeper(ChargeConfig.from_dict(self.robot_state.get("charging")))
+        self.p_battery.charge_changed.connect(self._set_charge)
+        self.p_nav.places.changed.connect(self._show_charge)    # places added or removed
+        self._show_charge()
+        self.p_status.health_source = self.health_context
+        self.p_status.bundle_requested.connect(self._ask_bundle)
+        if self.profiles.active() is not None:
+            self._apply_profile_to_panels(self.profiles.active())
         self._render_timer = QTimer(self)
         self._render_timer.setInterval(50)
         self._render_timer.timeout.connect(self._render)
@@ -141,6 +176,8 @@ class MainWindow(QMainWindow):
         self._sensor_timer.timeout.connect(self._check_sensors)
         self._sensor_timer.start()
         self._restore_robot_state()
+        self.scheduler = Scheduler(self.schedules, self._start_scheduled, parent=self)
+        self.scheduler.fired.connect(self._on_schedule_fired)
         self._state_timer = QTimer(self)        # so that a crash loses little
         self._state_timer.setInterval(5000)
         self._state_timer.timeout.connect(self._sync_state)
@@ -226,6 +263,12 @@ class MainWindow(QMainWindow):
         self.transfer = MapTransfer(self.ros, self.library, self)
         self.p_data = DataPanel(self.library, self.transfer)
         self.p_battery = BatteryPanel()
+        self.p_battery.set_logs(self.battery_logs)
+        self.p_mission.runs = self.runs
+        self.p_mission.soc = self._soc_now
+        self.p_schedule = SchedulePanel(self.schedules, self.runs, self.missions)
+        self.p_fleet = FleetPanel(self.profiles, self.fleet, set(self.settings.get("fleet_watch", [])),
+                                  model_of=self.robot_model_of)
 
         self._pages = {
             "conn": self.p_conn,
@@ -241,6 +284,8 @@ class MainWindow(QMainWindow):
             "events": self.p_events,
             "data": self.p_data,
             "battery": self.p_battery,
+            "schedule": self.p_schedule,
+            "fleet": self.p_fleet,
         }
         for key, label in PAGES:
             self.workspace.add_page(key, label, self._pages[key])
@@ -256,8 +301,11 @@ class MainWindow(QMainWindow):
             self.workspace.apply_preset("single", "conn")
         self.p_events.sound_ck.setChecked(self.sounds.enabled)
         self.p_events.sound_ck.toggled.connect(self._set_sound)
+        self.p_events.alerts_btn.clicked.connect(self._ask_alerts)
         self.p_conn.auto_ck.setChecked(bool(self.settings.get("auto_connect", False)))
         self.p_conn.auto_ck.toggled.connect(lambda on: save_settings({"auto_connect": on}))
+        self.p_conn.update_ck.setChecked(bool(self.settings.get("check_updates", True)))
+        self.p_conn.update_ck.toggled.connect(self._set_check_updates)
         self._shortcuts()
 
         # status bar
@@ -270,7 +318,14 @@ class MainWindow(QMainWindow):
         self.sb_battery = QLabel("🔋 —")
         sb.addPermanentWidget(self.sb_battery)
         sb.addPermanentWidget(QLabel("   |   "))
+        self.sb_update = QLabel("")
+        self.sb_update.setOpenExternalLinks(True)
+        self.sb_update.setTextFormat(Qt.RichText)
+        sb.addPermanentWidget(self.sb_update)
         sb.addPermanentWidget(self.sb_robot)
+        self.sb_user = QLabel("")
+        self.sb_user.setToolTip("Signed in to the robot's gateway")
+        sb.addPermanentWidget(self.sb_user)
         sb.addPermanentWidget(QLabel("   |   "))
         sb.addPermanentWidget(self.sb_conn)
         sb.addPermanentWidget(QLabel("   |   "))
@@ -362,6 +417,40 @@ class MainWindow(QMainWindow):
         self.sounds.enabled = on
         save_settings({"sound": on})
 
+    UPDATE_EVERY_S = 86400
+
+    def check_updates(self, force: bool = False) -> None:
+        """Once a day, off the GUI thread: is there a newer release on GitHub?"""
+        offer = self.settings.get("update_offer")
+        if offer and versions.parse(offer.get("tag", "")) > versions.parse(__version__):
+            self._show_update(offer)
+        if not force and (not self.settings.get("check_updates", True)
+                          or time.time() - float(self.settings.get("update_checked", 0)) < self.UPDATE_EVERY_S):
+            return
+
+        def done(r, e):
+            if e is not None:
+                return                  # offline: try again tomorrow
+            stamp = {"update_checked": time.time()}
+            if r:
+                stamp["update_offer"] = {"tag": r.get("tag_name", ""), "url": r.get("html_url", versions.PAGE)}
+                self._show_update(stamp["update_offer"])
+            self.settings.update(stamp)
+            save_settings(stamp)
+        from .panels.account import run_bg
+        run_bg(versions.check, done)
+
+    def _set_check_updates(self, on: bool) -> None:
+        self.settings["check_updates"] = on
+        save_settings({"check_updates": on})
+        if on:
+            self.check_updates()
+
+    def _show_update(self, offer: dict) -> None:
+        self.sb_update.setText(f'<a href="{offer.get("url", versions.PAGE)}" style="color:#4fd1ff;">'
+                               f'⬆ RCS {offer.get("tag", "")} is out</a>   |   ')
+        self.sb_update.setToolTip("Open the download page")
+
     def connect_on_start(self) -> None:
         if self.settings.get("auto_connect") and self.profiles.active():
             self._on_connect(self.profiles.active())
@@ -379,6 +468,8 @@ class MainWindow(QMainWindow):
         self._visible = vis
         if "events" in vis:
             self._set_unseen(0)
+        if "fleet" in newly:
+            self.p_fleet.rebuild()
         for k, b in self.btns.items():
             open_ = k in self.workspace.open_keys()
             if b.property("open") != open_:
@@ -392,7 +483,9 @@ class MainWindow(QMainWindow):
             self._render()
 
     def closeEvent(self, ev) -> None:
+        diagnostics.end_session()
         self._sync_state()
+        self.fleet.stop()
         save_settings({"layout": self.workspace.save_layout()})   # for robots with none of their own
         super().closeEvent(ev)
 
@@ -448,6 +541,15 @@ class MainWindow(QMainWindow):
         self.place_store.use(folder / "places.json")
         self.events.use(folder / "events.csv")
         self.robot_state = RobotState(folder / "state.json")
+        self.charger = ChargeKeeper(ChargeConfig.from_dict(self.robot_state.get("charging")))
+        self.runs.use(folder / "runs.json")
+        self.schedules.use(folder / "schedules.json")
+        self.scheduler.reset()
+        self.p_schedule.refresh()
+        self.battery_logs.use(folder / "battery_log")
+        self.p_battery._rows.clear()
+        self.p_battery._fill_boots([])
+        self._robot_stops = None
         self._set_unseen(0)
         self._nav_map = ""
         self._moved = False
@@ -455,6 +557,7 @@ class MainWindow(QMainWindow):
         self.p_mission.reload()
         self.p_nav.places.map_name = ""
         self.p_nav.places.refresh()
+        self._show_charge()
         self._restore_robot_state()
 
     def _bring_layout(self, profile: RobotProfile) -> None:
@@ -479,9 +582,11 @@ class MainWindow(QMainWindow):
             return
         names = self.library.names()
         refs = self._map_refs()
+        imported = self._imported_model(prof)
         dlg = ExportDialog(kind, prof.name, {
             "missions": len(self.missions.missions), "places": len(self.place_store.places),
             "layouts": len(self.settings.get("layouts", {})), "events": len(self.events.events),
+            "model": (imported.name or "model") if imported is not None else "",
         }, names, refs, refs - set(names), self)
         if dlg.exec() != QDialog.Accepted:
             return
@@ -490,6 +595,9 @@ class MainWindow(QMainWindow):
             self, "Save as", f"{stem}_{time.strftime('%Y%m%d')}{SUFFIX}", f"RCS pack (*{SUFFIX})")
         if path:
             self.export_pack_to(path, dlg.items())
+
+    def _imported_model(self, prof):
+        return robot_model.load(robot_dir(prof.id) / robot_model.MODEL_FILE) if prof else None
 
     def export_pack_to(self, path: str, items: dict) -> bool:
         self._sync_state()
@@ -503,7 +611,8 @@ class MainWindow(QMainWindow):
                 library=self.library, maps=tuple(items.get("maps", ())),
                 layouts=self.settings.get("layouts") if items.get("layouts") else None,
                 state=self.robot_state.data if items.get("state") else None,
-                events_path=self.events.path if items.get("events") else None)
+                events_path=self.events.path if items.get("events") else None,
+                model=self._imported_model(prof) if items.get("model") else None)
         except (OSError, ValueError) as e:
             self.p_data.show_result(False, f"cannot write {path}: {e}")
             return False
@@ -538,6 +647,9 @@ class MainWindow(QMainWindow):
                 res = import_as_new_robot(pack, want, self.library, self.profiles)
             else:
                 res = import_into(pack, want, self.library, self.missions, self.place_store)
+                prof = self._data_profile()
+                if "model" in want and prof is not None:
+                    install_model(pack, prof, self.profiles, res)
         except (OSError, ValueError) as e:
             self.p_data.show_result(False, f"cannot import {path}: {e}")
             return None
@@ -549,6 +661,11 @@ class MainWindow(QMainWindow):
         return res
 
     def _after_import(self, res: ImportResult) -> None:
+        if res.model == "added" and res.robot is None:
+            prof = self._data_profile()
+            if prof is not None:
+                self._on_profile_changed(prof)
+                self.p_conn.refresh()
         if res.robot is not None:
             self.p_conn.refresh()
         else:
@@ -586,6 +703,10 @@ class MainWindow(QMainWindow):
         self.p_conn.connect_requested.connect(self._on_connect)
         self.p_conn.disconnect_requested.connect(self.ros.disconnect_robot)
         self.p_conn.profile_changed.connect(self._on_profile_changed)
+        self.p_conn.signed_in.connect(self._on_signed_in)
+        self.ros.session.connect(self._on_session)
+        self.ros.denied.connect(self._on_denied)
+        self.ros.auth_problem.connect(self._on_auth_problem)
 
         self.ros.connected.connect(self._on_ros_connected)
         self.ros.disconnected.connect(self._on_ros_disconnected)
@@ -621,6 +742,13 @@ class MainWindow(QMainWindow):
         self.p_robot.open_page.connect(lambda k: self._show(k))
         self.ros.launcher_state.connect(self.p_data.on_launcher_state)
         self.ros.battery.connect(self._on_battery)
+        self.ros.estop_state.connect(self._on_estop_state)
+        self.p_teleop.cmd_vel.connect(self._on_teleop_cmd)
+        self.p_fleet.open_requested.connect(self._open_from_fleet)
+        self.p_fleet.watched_changed.connect(lambda ids: save_settings({"fleet_watch": sorted(ids)}))
+        self.p_fleet.estop_one.connect(self._on_fleet_estop)
+        self.p_fleet.estop_all_done.connect(self._on_fleet_estop_all)
+        self.p_schedule.changed.connect(lambda: self._log("info", "Schedule", "schedules changed"))
         self.p_data.export_requested.connect(self._ask_export)
         self.p_data.import_requested.connect(self._ask_import)
         self.transfer.finished.connect(
@@ -659,30 +787,157 @@ class MainWindow(QMainWindow):
         self.p_mission._emit_wps()      # the open mission was loaded before these connections
 
     def _on_connect(self, profile: RobotProfile) -> None:
+        """Connect. Without a token, the robot's gateway is asked at the same
+        time; if it wants a sign-in, auth_problem comes and asks for it."""
+        self._connect_t = time.monotonic()
+        self._connect_now(profile)
+        if not profile.token:
+            self.ros.probe_gateway()
+
+    _connect_t = -1e9
+
+    def _connect_now(self, profile: RobotProfile) -> None:
         self.profiles.set_active(profile.id)
         self._switch_robot(profile)
         self._bring_layout(profile)
         self.ros.set_profile(profile)
         self.ros.connect_robot()
+        self._apply_role(profile.role if profile.token else "")
+        self._show_user(profile)
         self.sb_robot.setText(f"{profile.name} ({profile.ws_url})")
         self._apply_profile_to_panels(profile)
 
+    # ---- health and diagnostics ----
+
+    _camera_problem = ""
+
+    def health_context(self) -> dict:
+        """What the Status page's health checks look at."""
+        now = time.monotonic()
+        launcher = self.p_robot._state or {}
+        online = self.p_robot._launcher_online()
+        t = self.ros.profile.topics if self.ros.profile else None
+        return {
+            "connected": self.ros.is_connected(), "launcher_online": online, "launcher": launcher,
+            "gate": self.gate_state or None, "estop": self._estop_on, "battery": getattr(self, "_battery", None),
+            "ages": {k: now - st.last_t for k, st in self.ros.topic_stats.items() if st.last_t > 0},
+            "localized": bool(t and self.tf.pose_xyyaw(t.map_frame, t.base_frame) is not None),
+            "camera_problem": self._camera_problem,
+            "robot_note": versions.robot_side_note(launcher) if online else "",
+            "role": self.ros.role, "user": self.ros.user,
+            "gateway": bool(self.ros.role) or bool(self.p_conn.account.gateway),
+        }
+
+    def _ask_bundle(self) -> None:
+        name = f"rcs_diagnostics_{time.strftime('%Y%m%d_%H%M')}.zip"
+        path, _ = QFileDialog.getSaveFileName(self, "Save a diagnostic bundle", name, "Zip (*.zip)")
+        if path:
+            self.save_bundle(path)
+
+    def save_bundle(self, path: str):
+        ctx = self.health_context()
+        from ..core import health
+        live = {"health": [c._asdict() for c in health.checks(ctx)],
+                "rates": {k: round(st.hz, 2) for k, st in self.ros.topic_stats.items()},
+                "launcher": ctx["launcher"], "gate": ctx["gate"], "battery": ctx["battery"],
+                "profile": self.ros.profile.shared() if self.ros.profile else None,
+                "role": self.ros.role, "nav_state": self._nav_state, "app_previous_run_unclean": self._unclean}
+        folder = robot_dir(self._data_robot)
+        files = [(f"robot/{n}", folder / n) for n in ("events.csv", "state.json", "missions.json", "places.json",
+                                                      "runs.json", "schedules.json")]
+        try:
+            out = diagnostics.make_bundle(path, live, files)
+        except OSError as e:
+            self.statusBar().showMessage(f"cannot write {path}: {e}", 8000)
+            return None
+        self.statusBar().showMessage(f"diagnostic bundle saved: {out}", 8000)
+        self._log("info", "App", f"diagnostic bundle saved: {out}")
+        return out
+
+    # ---- signing in (robot/rcs_gateway.py) ----
+
+    def _on_signed_in(self, profile: RobotProfile) -> None:
+        """A new token (or none): connect again with it if this is the robot in use."""
+        if self.ros.profile is not None and self.ros.profile.id == profile.id:
+            if profile.token:
+                self._connect_now(profile)
+            else:
+                self.ros.disconnect_robot()
+                self._apply_role("")
+        self._show_user(profile)
+
+    def _on_session(self, st: dict) -> None:
+        p = self.ros.profile
+        if p is None:
+            return
+        role, user = st.get("role", ""), st.get("user", "")
+        if (p.role, p.user) != (role, user):
+            p.role, p.user = role, user
+            self.profiles.upsert(p)
+        self._apply_role(role)
+        self.p_conn.account.set_session(user, role)
+        self._show_user(p)
+
+    def _show_user(self, p) -> None:
+        self.sb_user.setText(f"   👤 {p.user} · {p.role}" if p and p.token and p.role else "")
+
+    def _apply_role(self, role: str) -> None:
+        def why(action):
+            return permissions.refusal(role, action)
+        self.p_teleop.set_can_drive(permissions.can(role, "drive"), why("drive"))
+        self.p_robot.set_can_operate(permissions.can(role, "launch"), why("launch"))
+        self.p_mission.set_can_run(permissions.can(role, "goal"), why("goal"))
+        self.p_data.set_can_send(permissions.can(role, "send_map"), why("send_map"))
+        self.p_battery.set_can_delete(permissions.can(role, "delete_log"))
+
+    def _on_denied(self, d: dict) -> None:
+        text = d.get("what", "")
+        if not d.get("local"):
+            text = f"The robot refused: {text} needs {d.get('need')} (you are {d.get('role')})"
+        self.statusBar().showMessage(text, 8000)
+        self._log("warn", "Access", text)
+
+    def _on_auth_problem(self, why: str) -> None:
+        p = self.ros.profile
+        self.ros.disconnect_robot()
+        if p is not None and "ended" in why and p.token:
+            p.token, p.role = "", ""
+            self.profiles.upsert(p)
+        self._apply_role("")
+        self._show_user(p)
+        self.p_conn.account.show_problem(why)
+        self._log("warn", "Access", f"{p.name if p else 'robot'}: {why}")
+        self.statusBar().showMessage(why, 10000)
+        # just pressed Connect: ask now; otherwise the Connection page says so
+        if p is not None and time.monotonic() - self._connect_t < 30 and self.p_conn.account.profile is p:
+            self.p_conn.account.ask_sign_in()      # signed in: _on_signed_in connects again
+
     def _on_profile_changed(self, profile: RobotProfile) -> None:
-        self._apply_profile_to_panels(profile)
-        if not self.ros._want_connected:    # connected: the pages stay on that robot
+        self.p_fleet.rebuild()
+        # Connected, the pages stay on that robot: selecting another one in the
+        # list must not give the robot being driven its speed limits or size.
+        driven = self.ros.profile.id if self.ros._want_connected and self.ros.profile else None
+        if driven is None or driven == profile.id:
+            self._apply_profile_to_panels(profile)
+        if not self.ros._want_connected:
             self._switch_robot(profile)
         self._show_data_robot()
 
+    def robot_model_of(self, profile: RobotProfile):
+        """The model this robot is drawn with (None: a box of its footprint)."""
+        lim = profile.limits
+        return robot_model.for_profile(profile.model, robot_dir(profile.id),
+                                       lim.footprint_half_length, lim.footprint_half_width)
+
     def _apply_profile_to_panels(self, profile: RobotProfile) -> None:
         self.p_teleop.apply_limits(profile.limits.max_linear, profile.limits.max_angular)
-        self.p_map.view.set_robot_footprint(
-            profile.limits.footprint_half_length, profile.limits.footprint_half_width)
-        self.p_nav.view.set_robot_footprint(
-            profile.limits.footprint_half_length, profile.limits.footprint_half_width)
-        self.p_mission.view.set_robot_footprint(
-            profile.limits.footprint_half_length, profile.limits.footprint_half_width)
-        self.p_3d.set_robot_footprint(
-            profile.limits.footprint_half_length, profile.limits.footprint_half_width)
+        hl, hw = profile.limits.footprint_half_length, profile.limits.footprint_half_width
+        model = self.robot_model_of(profile)
+        for view in (self.p_map.view, self.p_nav.view, self.p_mission.view):
+            view.set_robot_footprint(hl, hw)
+            view.set_robot_model(model)
+        self.p_3d.set_robot_footprint(hl, hw)
+        self.p_3d.set_robot_model(model, "fixed")
 
     def _on_ros_connected(self) -> None:
         self.sb_conn.setText("● connected"); self.sb_conn.setStyleSheet("color:#39d98a;")
@@ -693,6 +948,8 @@ class MainWindow(QMainWindow):
         self.p_status.set_connected(True)
         self.p_robot.set_connected(True)
         self.p_data.set_connected(True)
+        self._gate_seen = False         # the next E-STOP state is the first of this connection
+        self.p_fleet.driven = self.ros.profile.id if self.ros.profile else ""
         self.robot_state.update(last_connected=time.time())
         self._show_data_robot()
 
@@ -705,6 +962,12 @@ class MainWindow(QMainWindow):
                 self._log("warn", "Connection", "connection lost, reconnecting")
             else:
                 self._log("info", "Connection", "disconnected")
+        if self.p_mission._exec_running:
+            # the robot stops by itself (its E-STOP gate misses this app's
+            # heartbeat): the mission waits for an operator, it does not go on
+            self.p_mission._pause()
+            self.runs.event("connection to the robot lost: paused")
+            self._log("warn", "Mission", "connection lost: mission paused, the robot stops by itself")
         self.p_conn.set_connected(False)
         self.p_status.set_connected(False)
         self.p_robot.set_connected(False)
@@ -724,6 +987,9 @@ class MainWindow(QMainWindow):
 
     def _log(self, level: str, source: str, text: str) -> None:
         self.events.add(level, source, text)
+        if source != "Alerts":
+            p = self.ros.profile or self._data_profile()
+            self.alerts.event(level, source, text, robot=p.name if p else "")
         self.statusBar().showMessage(f"{source}: {text}", 6000)
         if level != "info":
             if QApplication.platformName() != "offscreen":
@@ -738,9 +1004,71 @@ class MainWindow(QMainWindow):
         self._unseen = n
         self.btns["events"].setText(f"Events  ({n})" if n else "Events")
 
+    def _drain_alert_results(self) -> None:
+        while self._alert_results:
+            ok, text = self._alert_results.pop(0)
+            self._log("info" if ok else "warn", "Alerts", text)
+
+    def _ask_alerts(self) -> None:
+        from .panels.alerts_dialog import AlertsDialog
+
+        def test(cfg):
+            Alerts(cfg, report=lambda ok, t: self._alert_results.append((ok, t))).test()
+        dlg = AlertsDialog(self.settings.get("alerts") or {}, test, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.set_alerts(dlg.config())
+
+    def set_alerts(self, cfg: dict) -> None:
+        self.settings["alerts"] = cfg
+        save_settings({"alerts": cfg})
+        self.alerts.configure(cfg)
+
+    # ---- going to charge by itself ----
+
+    _charger_goal = False
+
+    def _show_charge(self) -> None:
+        places = [(p.id, p.name) for p in self.place_store.places if not self._nav_map or p.map in ("", self._nav_map)]
+        self.p_battery.set_charge(self.charger.cfg.to_dict(), places)
+
+    def _set_charge(self, cfg: dict) -> None:
+        self.charger.cfg = ChargeConfig.from_dict(cfg)
+        self.robot_state.update(charging=self.charger.cfg.to_dict())
+
+    def _charge_step(self) -> None:
+        cfg = self.charger.cfg
+        place = self.place_store.get(cfg.place) if cfg.place else None
+        b = self._battery or {}
+        cur = (b.get("reading") or {}).get("current") if b and live(b) else None
+        acts = self.charger.step(self._soc_now(), cur, self.p_mission._exec_running, self._nav_state,
+                                 self._estop_on, place is not None and self.ros.is_connected())
+        for a in acts:
+            if a == "pause_mission":
+                self.p_mission._pause()
+            elif a == "go_charger" and place is not None:
+                self._log("warn", "Charging", f"battery {self._soc_now():.0f}%: going to charge at {place.name}")
+                self._charger_goal = True
+                try:
+                    self._send_goal(place.x, place.y, place.yaw)
+                finally:
+                    self._charger_goal = False
+            elif a == "arrived":
+                self._log("info", "Charging", f"at {place.name if place else 'the charging place'}, waiting to charge")
+            elif a == "charged":
+                self._log("info", "Charging", f"charged ({self._soc_now():.0f}%)")
+            elif a == "resume_mission":
+                self._log("info", "Charging", "the mission goes on")
+                self.p_mission._play()
+            elif a == "failed":
+                self._log("error", "Charging", "could not reach the charging place: the robot needs someone")
+        self.p_battery.show_charge_status(self.charger.why)
+
     def _check_sensors(self) -> None:
+        self._drain_alert_results()
+        self._charge_step()
         """A sensor that was arriving and stopped is worth an event; one that
         never arrived is not (bringup may simply not be running)."""
+        self._update_driving()
         self._update_camera_status()
         self._update_battery_silence()
         if not self.ros.is_connected():
@@ -759,9 +1087,30 @@ class MainWindow(QMainWindow):
     _battery = None         # latest report of the robot's battery service
     _battery_alarm = ""
 
+    def _soc_now(self):
+        """Charge now, or None when the battery is not heard live."""
+        b = self._battery
+        return float(b["reading"]["soc"]) if b and b.get("reading") and live(b) else None
+
     def _on_battery(self, b: dict) -> None:
         self._battery = b
         self._show_battery()
+        self._report_last_boot(b.get("log") or {})
+
+    def _report_last_boot(self, log: dict) -> None:
+        """Once per boot file: how the robot's last boot ended, when it was not
+        a clean shut down (power cut or crash), and a disk getting full."""
+        prev = log.get("previous") or {}
+        name = prev.get("name")
+        if name and not prev.get("clean_end") and self.robot_state.get("power_loss_seen") != name:
+            from ..core.battery_history import how_it_ended
+            self.robot_state.update(power_loss_seen=name)
+            self._log("warn", "Battery", f"the robot's last boot ended with {how_it_ended(prev)}")
+        disk = log.get("disk") or {}
+        if disk.get("low") and not getattr(self, "_disk_warned", False):
+            self._disk_warned = True
+            self._log("warn", "Battery", "the robot's disk is nearly full: the battery log is kept until "
+                                         "you delete old boots (Battery, History)")
 
     def _show_battery(self) -> None:
         b = self._battery
@@ -810,6 +1159,7 @@ class MainWindow(QMainWindow):
         prof = self.ros.profile
         topic = prof.topics.camera_image if prof else "the camera topic"
         text = camera_problem(connected, st, frames, topic)
+        self._camera_problem = text or ""
         self.p_cam.set_problem(text)
         self.p_3d.camera_problem = text or ""
 
@@ -954,6 +1304,7 @@ class MainWindow(QMainWindow):
             self.p_3d.update_robot_pose(*pose)
             self.p_nav.places.set_pose(*pose)
             self._track_pose(pose)
+            self._track_run_distance(pose)
             self.sb_pose.setText(f"pose: x={pose[0]:+.2f} y={pose[1]:+.2f} yaw={pose[2]:+.2f}")
             now = time.monotonic()
             if now - getattr(self, "_progress_t", 0.0) > 0.2:      # 5 Hz is plenty
@@ -1008,11 +1359,14 @@ class MainWindow(QMainWindow):
         self._set_layer("map", m)
 
     def _send_goal(self, x: float, y: float, yaw: float) -> None:
+        if not self._charger_goal:
+            self.charger.take_over()        # the operator's goal (or a mission they started)
         self._goal = (x, y, yaw)
         self._log("info", "Navigation", f"goal sent to ({x:.2f}, {y:.2f})")
         for v in (self.p_map.view, self.p_nav.view, self.p_mission.view, self.p_3d):
             v.set_goal(x, y, yaw)
         self.ros.send_nav_goal(x, y, yaw)
+        self._update_driving()
 
     def _frame_in_map(self, m: dict):
         """Pose of a message's header frame in the map frame, or None if TF
@@ -1102,10 +1456,11 @@ class MainWindow(QMainWindow):
         if on:
             self.sb_estop.setText("● estop: ENGAGED")
             self.sb_estop.setStyleSheet("color:#ff6a6a; font-weight:700;")
-            self.p_mission.stop_mission()
+            self.p_mission.stop_mission(reason="E-STOP")
             self.ros.cancel_nav_goal()
             self.ros.publish_cmd_vel(0.0, 0.0)
         else:
+            self._released_t = time.monotonic()
             self.sb_estop.setText("● estop: clear")
             self.sb_estop.setStyleSheet("color:#39d98a;")
         if publish:
@@ -1114,3 +1469,129 @@ class MainWindow(QMainWindow):
     def _on_estop_remote(self, on: bool) -> None:
         # /amr/estop from another client (e.g. amr_control_center) — mirror it
         self._set_estop(on, publish=False)
+
+    # ---- the robot's own E-STOP (robot/rcs_safety.py) ----
+
+    _estop_on = False       # the app's E-STOP, engaged here or mirrored from the robot
+    _gate_seen = False
+    _released_t = -1e9      # a state sent before the robot heard our release still says engaged
+    _robot_stops = None     # how often the robot stopped itself, as last seen
+    gate_state: dict = {}
+
+    def _on_estop_state(self, st: dict) -> None:
+        self.gate_state = st
+        first = not self._gate_seen
+        self._gate_seen = True
+        engaged = bool(st.get("engaged"))
+        mine = getattr(self, "_estop_on", False)
+        # This only ever engages the app's E-STOP, never releases it: a state
+        # sent just before the robot heard our E-STOP still says "clear".
+        # A release comes as /amr/estop false (_on_estop_remote).
+        if engaged and not mine and time.monotonic() - self._released_t > 2.0:
+            self._set_estop(True, publish=False)
+        elif first and mine and not engaged:
+            # engaged here while the robot could not hear it: tell it now
+            self.ros.publish_estop(True)
+        stops, last = st.get("stops"), st.get("last_stop") or {}
+        if self._robot_stops is not None and stops is not None and stops > self._robot_stops and last:
+            self._log("warn", "E-STOP", f"the robot stopped itself: {last.get('reason', '')}")
+            self.runs.event(f"the robot stopped itself: {last.get('reason', '')}")
+        if stops is not None:
+            self._robot_stops = stops
+
+    _teleop_t = 0.0
+
+    def _on_teleop_cmd(self, lin: float, ang: float) -> None:
+        if abs(lin) > 1e-4 or abs(ang) > 1e-4:
+            self.charger.take_over()
+            self._teleop_t = time.monotonic()
+            self._update_driving()
+
+    def _update_driving(self) -> None:
+        """Told to the robot in the heartbeat: if this app goes silent while
+        driving, the robot stops."""
+        self.ros.driving = bool(
+            self.p_mission._exec_running
+            or (self._goal is not None and self._nav_state in ("active", "pending", ""))
+            or time.monotonic() - self._teleop_t < 1.0)
+
+    _run_pose = None
+
+    def _track_run_distance(self, pose) -> None:
+        if self.runs.active is None:
+            self._run_pose = None
+            return
+        if self._run_pose is not None:
+            d = math.hypot(pose[0] - self._run_pose[0], pose[1] - self._run_pose[1])
+            if d < 1.0:             # a jump is relocalization, not driving
+                self.runs.add_distance(d)
+        self._run_pose = pose
+
+    # ---- schedule ----
+
+    def _start_scheduled(self, s) -> str:
+        """Start a scheduled run now, or say why not (that is reported too)."""
+        m = self.missions.get(s.mission_id)
+        name = m.name if m else "(deleted mission)"
+        why = self._not_ready(s)
+        if not why:
+            why = self.p_mission.run_mission(s.mission_id, "schedule", s.id)
+        if why:
+            self.runs.skipped(s.mission_id, name, why, s.id, self._soc_now())
+        return why
+
+    def _not_ready(self, s) -> str:
+        prof = self._data_profile()
+        if not self.ros.is_connected() or not self.ros.profile or not prof or self.ros.profile.id != prof.id:
+            return "the app was not connected to this robot"
+        if getattr(self, "_estop_on", False):
+            return "E-STOP was engaged"
+        nav = (self._launcher.get("stacks") or {}).get("nav", {}) if self._launcher else {}
+        if nav.get("state") != "running":
+            return "navigation was not running on the robot"
+        if self.p_mission._exec_idx >= 0:
+            return "another mission was running"
+        if s.min_soc:
+            soc = self._soc_now()
+            if soc is None:
+                return f"the battery was not known (needs at least {s.min_soc}%)"
+            if soc < s.min_soc:
+                return f"the battery was at {soc:.0f}%, below {s.min_soc}%"
+        return ""
+
+    def _on_schedule_fired(self, s, why: str) -> None:
+        m = self.missions.get(s.mission_id)
+        name = m.name if m else "(deleted mission)"
+        if why:
+            self._log("warn", "Schedule", f"'{name}' at {s.at} skipped: {why}")
+        else:
+            self._log("info", "Schedule", f"'{name}' started by the schedule ({s.at})")
+        self._update_driving()
+        self.p_schedule.refresh()
+
+    # ---- fleet ----
+
+    def _open_from_fleet(self, rid: str) -> None:
+        prof = next((p for p in self.profiles.profiles if p.id == rid), None)
+        if prof is None:
+            return
+        if self.ros._want_connected and self.ros.profile and self.ros.profile.id == rid:
+            self._show("status")
+            return
+        if self.p_mission._exec_idx >= 0:
+            self.statusBar().showMessage("Stop the mission before opening another robot", 6000)
+            return
+        self._on_connect(prof)
+        self.p_conn.refresh()
+
+    def _on_fleet_estop(self, rid: str) -> None:
+        prof = next((p for p in self.profiles.profiles if p.id == rid), None)
+        self._log("error", "E-STOP", f"engaged on {prof.name if prof else rid} from the Fleet page")
+        if self.ros.profile and self.ros.profile.id == rid and self.ros.is_connected():
+            self._set_estop(True)
+
+    def _on_fleet_estop_all(self, names) -> None:
+        self._log("error", "E-STOP", f"engaged on all watched robots from the Fleet page: "
+                                     f"{', '.join(names) or 'none reached'}")
+        if self.ros.is_connected():
+            self._set_estop(True)

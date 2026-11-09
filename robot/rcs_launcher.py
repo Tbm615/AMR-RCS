@@ -15,7 +15,7 @@ to it through two std_msgs/String topics carrying JSON:
 
   /rcs/launcher/state  robot -> app, 1 Hz and on every change
       {"version": 1, "stacks": {"bringup": {...}, "nav": {...}},
-       "maps": [...], "map_mtimes": {name: mtime}, "caps": ["map_transfer"],
+       "maps": [...], "map_mtimes": {name: mtime}, "caps": ["map_transfer", "estop_gate"],
        "camera": {"color": bool, "depth": bool, "publishers": n},
        "result": {"id", "ok", "msg"}}
 
@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import threading
@@ -61,6 +62,17 @@ SAVED_MAPS = WS / "maps"
 LOG_DIR = WS / "runlog"
 PID_FILE = LOG_DIR / "rcs_launcher.pids"
 LOG_MAX_BYTES = 20 * 1024 * 1024
+# The simulator (sim/gazebo/run_gazebo.sh) sets these; unset on the robot.
+# The drives follow the E-STOP gate (rcs_safety.py), not /cmd_vel_safe: every
+# command passes it. RCS_ESTOP_GATE=0 starts bringup the old way, unguarded; so
+# does an RCS_BRINGUP_CMD without cmd_vel_topic:=/rcs/cmd_vel_gated (Gazebo sim).
+GATE = os.environ.get("RCS_ESTOP_GATE", "1") != "0"
+ROBOT_SIDE = "0.6.0b1"      # the release of these robot/ files: the app says when it is older than itself
+GATED_TOPIC = "/rcs/cmd_vel_gated"
+BRINGUP_CMD = shlex.split(os.environ.get(
+    "RCS_BRINGUP_CMD",
+    "ros2 launch bringup bringup.launch.py" + (f" cmd_vel_topic:={GATED_TOPIC}" if GATE else "")))
+SIM_TIME = os.environ.get("RCS_USE_SIM_TIME") == "1"
 # The HINS lidar driver can print this hundreds of times a second.
 DROP_LINES = ("null data",)
 
@@ -84,19 +96,21 @@ def _mtime(path: str) -> float:
 
 def _nav_commands(mode: str, map_yaml: str = "") -> list:
     cfg = NAV_SHARE / "config"
+    sim = ["use_sim_time:=true"] if SIM_TIME else []
     if mode == "map":
         return [["ros2", "launch", "navigation", "robot_navigation.launch.py",
-                 f"map:={map_yaml}", "use_cbf:=true", "rviz:=false"]]
+                 f"map:={map_yaml}", "use_cbf:=true", "rviz:=false", *sim]]
     # SLAM: same Nav2 + CBF chain as robot_navigation.launch.py, slam_toolbox
     # in place of AMCL and the map server.
     return [
-        ["ros2", "launch", "slam", "slamtoolbox.launch.xml"],
+        ["ros2", "launch", "slam", "slamtoolbox.launch.xml", *sim],
         ["ros2", "launch", "nav2_bringup", "navigation_launch.py",
-         f"params_file:={cfg / 'nav2_smac_mppi.yml'}"],
+         f"params_file:={cfg / 'nav2_smac_mppi.yml'}", *sim],
         ["ros2", "run", "navigation", "cbf_safety_filter.py", "--ros-args",
          "--params-file", str(cfg / "cbf_params.yaml"),
          "-r", "cmd_vel_raw:=/cmd_vel", "-r", "cmd_vel:=/cmd_vel_safe",
-         "-r", "scan:=/scan_filtered", "-r", "odom:=/odom"],
+         "-r", "scan:=/scan_filtered", "-r", "odom:=/odom",
+         *(["-p", "use_sim_time:=true"] if SIM_TIME else [])],
     ]
 
 
@@ -288,9 +302,9 @@ class Launcher(Node):
                 self.count_publishers("/navigate_to_pose/_action/status"):
             stacks["nav"]["external"] = True
         maps = _maps()
-        msg = {"version": 1, "time": time.time(), "stacks": stacks,
+        msg = {"version": 1, "rcs": ROBOT_SIDE, "time": time.time(), "stacks": stacks,
                "maps": sorted(maps), "map_mtimes": {k: _mtime(v) for k, v in maps.items()},
-               "caps": ["map_transfer"], "busy": self.busy, "result": self.result,
+               "caps": ["map_transfer"] + (["estop_gate"] if GATED_TOPIC in " ".join(BRINGUP_CMD) else []), "busy": self.busy, "result": self.result,
                "camera": {**camera_usb(), "publishers": self.count_publishers("/camera/depth/image_raw")}}
         self.pub.publish(String(data=json.dumps(msg)))
 
@@ -366,7 +380,10 @@ class Launcher(Node):
                 return True, "bringup is already running"
             if self.count_publishers("/odom"):
                 return False, "bringup is already running outside the app (stop it there first)"
-            st.start([["ros2", "launch", "bringup", "bringup.launch.py"]], {})
+            if GATED_TOPIC in " ".join(BRINGUP_CMD) and not self.count_publishers(GATED_TOPIC):
+                return False, ("the robot's E-STOP service (rcs_safety.py) is not running, so the "
+                               "drives would not move: see robot/README.md")
+            st.start([BRINGUP_CMD], {})
             return True, "bringup starting"
         # nav
         if not STACKS["bringup"].running() and not self.count_publishers("/odom"):
@@ -401,7 +418,8 @@ class Launcher(Node):
         out = SAVED_MAPS / name
         r = subprocess.run(
             ["ros2", "run", "nav2_map_server", "map_saver_cli", "-f", str(out),
-             "--ros-args", "-p", "map_subscribe_transient_local:=true"],
+             "--ros-args", "-p", "map_subscribe_transient_local:=true",
+             *(["-p", "use_sim_time:=true"] if SIM_TIME else [])],
             capture_output=True, text=True, timeout=40)
         if r.returncode == 0 and out.with_suffix(".yaml").exists():
             return True, f"map saved as {name}"

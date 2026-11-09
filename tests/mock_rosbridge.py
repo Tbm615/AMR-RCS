@@ -8,6 +8,16 @@ Implements the subset of the rosbridge v2.0 protocol that RCS actually uses:
   - periodic server-side publishes of /map, /scan_filtered, /odom, /tf
   - throttle_rate on subscriptions, like the real rosbridge
 
+With --robot it is also the robot's own services, running their real code:
+the battery service (robot/battery_log.py writes a boot log in a temp folder
+and answers /rcs/battery/cmd; the BMS reading is made up) and the E-STOP gate
+(robot/estop_gate.py: /amr/estop, heartbeats, /rcs/estop/state; the base then
+follows only what the gate lets through). --name gives the robot a name, so
+tests can tell several mocks apart.
+
+A message a client publishes also goes to the clients subscribed to that
+topic, as with the real rosbridge.
+
 With --heavy it also sends robot-sized traffic: a 1000 x 1000 SLAM map and
 global costmap, 4995-point scans at 20 Hz, a local costmap, and a synthetic
 RGB-D camera (tests/synthetic_rgbd.py) whose frames arrive CAMERA_DELAY late,
@@ -23,10 +33,12 @@ import base64
 import json
 import math
 import os
+import re
 import struct
 import sys
 import tempfile
 import time
+from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
@@ -37,6 +49,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import map_files                                                 # noqa: E402
 import map_preview                                               # noqa: E402
 from map_exchange import MapExchange                             # noqa: E402
+import battery_log                                               # noqa: E402
+import estop_gate                                                # noqa: E402
 
 
 HEAVY = False
@@ -62,6 +76,10 @@ class Hub:
 
 
 HUB = Hub()
+# the release of the robot side, as the real rcs_launcher.py says it
+_m = re.search(r'ROBOT_SIDE = "([^"]+)"', (Path(__file__).resolve().parent.parent / "robot" / "rcs_launcher.py")
+               .read_text(encoding="utf-8"))
+ROBOT_SIDE = _m.group(1) if _m else ""
 
 
 class FakeLauncher:
@@ -144,7 +162,7 @@ class FakeLauncher:
         return {"op": "publish", "topic": "/rcs/launcher/preview", "msg": {"data": json.dumps(out)}}
 
     def state_msg(self) -> dict:
-        st = {"version": 1, "time": time.time(), "stacks": self.stacks,
+        st = {"version": 1, "rcs": ROBOT_SIDE, "time": time.time(), "stacks": self.stacks,
               "maps": self.maps, "busy": "", "result": self.result}
         if not self.old:
             st["map_mtimes"] = {m: 1000.0 for m in self.maps}
@@ -154,6 +172,67 @@ class FakeLauncher:
 
 
 LAUNCHER = FakeLauncher()
+
+
+class FakeRobot:
+    """The robot's battery service and E-STOP gate, with their real code."""
+
+    def __init__(self, name: str = "mock", soc: int = 80) -> None:
+        self.name, self.soc = name, soc
+        self.log_dir = tempfile.mkdtemp(prefix=f"rcs_mock_battlog_{name}_")
+        # a boot before this one that ended in a power cut: no "stopped" row
+        old = battery_log.BootLog(self.log_dir, boot="0000aaaa", clock=lambda: time.time() - 7200,
+                                  up=lambda: 3600)
+        for i in range(30):
+            old.write(self.status(age=0.5, soc=self.soc + 5))
+        old._f.close()
+        self.log = battery_log.BootLog(self.log_dir, boot="1111bbbb")
+        self.exchange = battery_log.LogExchange(self.log)
+        self.gate = estop_gate.Gate(os.path.join(self.log_dir, "estop.json"))
+        self.cancels = 0
+        self.out: list = []          # publishes waiting to go out
+
+    def status(self, age=0.5, soc=None) -> dict:
+        cells = [3.30 + 0.002 * i for i in range(15)]
+        r = {"soc": self.soc if soc is None else soc, "soh": 98, "voltage": round(sum(cells), 3),
+             "current": -5.2, "power": 257.0, "cells": cells, "delta": round(cells[-1] - cells[0], 3),
+             "temps": [31.0, 32.0], "mos_temp": 38.0, "remaining_ah": 15.0, "nominal_ah": 19.5,
+             "cycles": 27, "charging": True, "discharging": True, "cell_avg": 3.314,
+             "resistances": [0.18] * 15, "balancing": 0, "balance_current": 0.0,
+             "total_cycle_ah": 540.0, "runtime_s": 33457295, "alarms": 0, "wire_alarms": 0}
+        return {"state": "connected", "address": "98:da:20:0b:36:a1", "name": f"{self.name} battery",
+                "rssi": -80, "heard": 3, "reconnects": 1, "error": "", "bad_frames": 0, "connected_s": 60,
+                "age": age, "reading": r}
+
+    def tick(self) -> list:
+        st = self.status()
+        st["log"] = {"file": self.log.name, "rows": self.log.rows, "disk": self.log.disk(),
+                     "previous": self.log.previous}
+        self.log.write(st)
+        if "cancel_nav" in self.gate.tick(False):
+            self.cancels += 1
+        g = dict(self.gate.state(), host=self.name, cancels=self.cancels)
+        return [{"op": "publish", "topic": "/rcs/battery", "msg": {"data": json.dumps(st)}},
+                {"op": "publish", "topic": "/rcs/estop/state", "msg": {"data": json.dumps(g)}}]
+
+    def on_publish(self, topic: str, msg: dict) -> None:
+        if topic == "/rcs/battery/cmd":
+            try:
+                ans = self.exchange.handle(json.loads(msg.get("data", "")))
+            except ValueError:
+                return
+            self.out.append({"op": "publish", "topic": "/rcs/battery/log", "msg": {"data": json.dumps(ans)}})
+        elif topic == "/amr/estop":
+            if "cancel_nav" in self.gate.estop(bool(msg.get("data")), by="/amr/estop"):
+                self.cancels += 1
+        elif topic == "/rcs/app/heartbeat":
+            try:
+                self.gate.heartbeat(json.loads(msg.get("data", "")))
+            except ValueError:
+                pass
+
+
+ROBOT = None
 
 
 async def send(ws, obj) -> None:
@@ -322,6 +401,8 @@ async def ticker():
             if p.get("topic") == "/cmd_vel_safe":
                 vx = float(p["msg"]["linear"].get("x", 0.0))
                 wz = float(p["msg"]["angular"].get("z", 0.0))
+                if ROBOT is not None:       # the base follows the gate, as on the robot
+                    vx, wz = ROBOT.gate.filter(vx, wz)
                 last_cmd_t = now
                 break
         if now - last_cmd_t > 0.5:
@@ -348,6 +429,8 @@ async def ticker():
                 msgs.append(_oc_grid(now))
         if tick % 10 == 0:
             msgs.append(LAUNCHER.state_msg())
+        if ROBOT is not None and tick % 20 == 0:
+            msgs += ROBOT.tick()
         for m in msgs:
             await _deliver(m["topic"], m)
         tick += 1
@@ -407,6 +490,13 @@ async def handle(ws):
                 HUB.advertised_by_client.pop(m.get("topic", ""), None)
             elif op == "publish":
                 HUB.record_publish({"topic": m["topic"], "msg": m.get("msg", {}), "t": time.time()})
+                # to the clients subscribed to it, as rosbridge does
+                await _deliver(m["topic"], {"op": "publish", "topic": m["topic"], "msg": m.get("msg", {})})
+                if ROBOT is not None:
+                    ROBOT.on_publish(m["topic"], m.get("msg", {}))
+                    while ROBOT.out:
+                        p = ROBOT.out.pop(0)
+                        await _deliver(p["topic"], p)
                 if m["topic"] == "/rcs/launcher/cmd":
                     try:
                         LAUNCHER.command(json.loads(m.get("msg", {}).get("data", "")))
@@ -446,11 +536,18 @@ def main():
     ap.add_argument("--port", type=int, default=9090)
     ap.add_argument("--duration", type=float, default=None,
                     help="exit after this many seconds (for CI)")
+    ap.add_argument("--robot", action="store_true",
+                    help="also the robot's battery service and E-STOP gate (their real code)")
+    ap.add_argument("--name", default="mock", help="robot name, with --robot")
+    ap.add_argument("--soc", type=int, default=80, help="battery charge, with --robot")
     ap.add_argument("--heavy", action="store_true",
                     help="robot-sized traffic: big map/costmap, 4995-point scans, RGB-D camera")
     args = ap.parse_args()
-    global HEAVY
+    global HEAVY, ROBOT
     HEAVY = args.heavy
+    if args.robot:
+        ROBOT = FakeRobot(args.name, args.soc)
+        print(f"mock robot {args.name}: battery log in {ROBOT.log_dir}", flush=True)
     asyncio.run(main_async(args.host, args.port, args.duration))
 
 

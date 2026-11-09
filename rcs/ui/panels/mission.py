@@ -46,6 +46,9 @@ class MissionPanel(QWidget):
         self.map_name = ""              # saved map Nav2 runs on; "" = none, or SLAM
         self._resume: Optional[dict] = None     # run the app was closed in, see show_last_run
         self._undo_stack: list = []     # waypoint lists of the open mission
+        self.runs = None                # RunLog: a report of every run
+        self.soc = lambda: None         # battery charge now, for the reports
+        self._trigger = ("manual", "")  # who starts the next run: (kind, schedule id)
         self._build()
         self._reload_missions()
 
@@ -444,7 +447,7 @@ class MissionPanel(QWidget):
         rows = self.selected_rows()
         self.view.set_waypoint_selection(rows)
         self.apply_btn.setEnabled(bool(rows))
-        self.from_btn.setEnabled(len(rows) == 1)
+        self.from_btn.setEnabled(len(rows) == 1 and self.can_run)
         self.sel_lbl.setText(f"{len(rows)} selected" if len(rows) > 1 else "")
 
     def _blocked_while_running(self) -> bool:
@@ -535,9 +538,43 @@ class MissionPanel(QWidget):
             return True
         return False
 
+    def run_mission(self, mid: str, trigger: str = "schedule", schedule_id: str = "") -> str:
+        """Start a mission from its first waypoint, as the schedule does.
+        Returns "" when it started, else why it did not."""
+        if self._exec_idx >= 0:
+            return "another mission is running"
+        m = self.store.get(mid)
+        if m is None:
+            return "the mission no longer exists"
+        if not m.waypoints:
+            return f"'{m.name}' has no waypoints"
+        self.open_mission(mid)
+        self._trigger = (trigger, schedule_id)
+        self._play(0, 0)
+        self._trigger = ("manual", "")
+        if self._exec_idx < 0:
+            return self.status_lbl.text() or "it did not start"
+        return ""
+
+    can_run = True          # False for a signed-in viewer
+
+    def set_can_run(self, ok: bool, why: str = "") -> None:
+        self.can_run = ok
+        for b in (self.play_btn, self.from_btn):
+            b.setToolTip("" if ok else why)
+        self.play_btn.setEnabled(ok)
+        if not ok:
+            self.from_btn.setEnabled(False)
+
     def _play(self, start: Optional[int] = None, lap: int = 0) -> None:
+        if not self.can_run:
+            self.event.emit("warn", self.play_btn.toolTip() or "your role cannot run missions")
+            return
         if not self.cur or not self.cur.waypoints or self._wrong_map():
             return
+        if self.runs is not None and (self.runs.active is None or self.runs.active.mission_id != self.cur.id
+                                      or start is not None):
+            self.runs.start(self.cur, self._trigger[0], self._trigger[1], self.soc())
         if start is not None:
             self._exec_idx = start
             self._lap = lap
@@ -556,9 +593,9 @@ class MissionPanel(QWidget):
         self.status_lbl.setText("paused")
         self.cancel_requested.emit()
 
-    def stop_mission(self) -> None:
+    def stop_mission(self, reason: str = "") -> None:
         if self._exec_running or self._exec_idx >= 0:
-            self._stop()
+            self._stop(reason=reason)
 
     def run_state(self) -> Optional[dict]:
         """Where a run is, for the robot's saved state; None with no run."""
@@ -584,9 +621,11 @@ class MissionPanel(QWidget):
         self.status_lbl.setText(f"{text}. To go on: Start from selected waypoint")
         return text
 
-    def _stop(self) -> None:
+    def _stop(self, result: str = "stopped", reason: str = "") -> None:
+        if self.runs is not None and self.runs.active is not None:
+            self.runs.finish(result, reason or "stopped by the operator", self.soc())
         if self._exec_idx >= 0 and self.cur:
-            self.event.emit("info", f"'{self.cur.name}' stopped")
+            self.event.emit("info", f"'{self.cur.name}' stopped" + (f": {reason}" if reason else ""))
         self._resume = None
         self._exec_running = False
         self._exec_idx = -1
@@ -609,11 +648,13 @@ class MissionPanel(QWidget):
             return                      # already there; the tick will advance
         self._retries += 1
         if self._retries > self.MAX_RETRIES:
-            self._stop()
+            self._stop("failed", f"Nav2 could not reach {wp.name} ({status})")
             self.status_lbl.setText(f"stopped: Nav2 could not reach {wp.name} ({status})")
             self.event.emit("error", f"Nav2 could not reach {wp.name} ({status}), mission stopped")
             return
         self.status_lbl.setText(f"{status} at {wp.name}, retry {self._retries}/{self.MAX_RETRIES}…")
+        if self.runs is not None:
+            self.runs.retry(f"{status} at {wp.name}, retry {self._retries}")
         self.event.emit("warn", f"{status} at {wp.name}, retry {self._retries}/{self.MAX_RETRIES}")
         QTimer.singleShot(2000, self._retry_current)
 
@@ -656,6 +697,8 @@ class MissionPanel(QWidget):
                 self._exec_dwell_until = time.monotonic() + wp.dwell
                 self.status_lbl.setText(f"arrived {wp.name} — dwell {wp.dwell:.1f} s")
                 self.event.emit("info", f"arrived at {wp.name}")
+                if self.runs is not None:
+                    self.runs.reached(wp.name)
                 return
             if time.monotonic() < self._exec_dwell_until:
                 return
@@ -663,6 +706,8 @@ class MissionPanel(QWidget):
             self._exec_idx += 1
             if self._exec_idx >= len(self.cur.waypoints):
                 self._lap += 1
+                if self.runs is not None:
+                    self.runs.lap()
                 if self.cur.loop and not (self.cur.laps and self._lap >= self.cur.laps):
                     self._exec_idx = 0
                 else:
@@ -670,5 +715,7 @@ class MissionPanel(QWidget):
                     self._exec_idx = -1
                     self.status_lbl.setText("mission complete")
                     self.event.emit("info", f"'{self.cur.name}' complete")
+                    if self.runs is not None:
+                        self.runs.finish("complete", "", self.soc())
                     return
             self._dispatch_current()
