@@ -93,7 +93,7 @@ def checks(ctx: dict) -> List[Check]:
                          "Delete old battery logs or maps on the robot."))
     cam = ctx.get("camera_problem")
     if cam:
-        out.append(Check("camera", "Camera", "warn", cam.split(".")[0], cam))
+        out.append(Check("camera", "Camera", "warn", "no picture", cam))
     return out
 
 

@@ -198,6 +198,7 @@ class View3DPanel(QWidget):
         self._drawn_version = -1
         self._robot = None              # (x, y, yaw) in the map frame
         self._traj: list = []
+        self._traj_frame = ""
         self._traj_dirty = False
         self._last_stats: dict = {}
         self._fps_t: list = []
@@ -517,10 +518,17 @@ class View3DPanel(QWidget):
             self.box.setSize(2 * half_l, 2 * half_w, self.robot_h)
             self._show_body(self.ck_robot.isChecked() and self._robot is not None)
 
-    def update_robot_pose(self, x: float, y: float, yaw: float) -> None:
+    def update_robot_pose(self, x: float, y: float, yaw: float, frame: str = "") -> None:
+        """frame: what the pose is in (map / odom). When it changes, the
+        trajectory starts again: one line across two frames is a false jump."""
         if not HAVE_GL:
             return
         self._robot = (x, y, yaw)
+        if frame and frame != self._traj_frame:
+            if self._traj_frame:
+                self._traj = []
+                self._traj_dirty = True
+            self._traj_frame = frame
         if not self._traj or math.hypot(x - self._traj[-1][0], y - self._traj[-1][1]) > 0.05:
             self._traj.append((x, y, 0.02))
             if len(self._traj) > 20000:

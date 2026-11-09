@@ -137,6 +137,8 @@ class MainWindow(QMainWindow):
         self._odom_y = 0.0
         self._odom_yaw = 0.0
         self._odom_v = 0.0
+        self._odom_seen = False         # an odom message has come (else _odom_* are just zeros)
+        self._pose_frame = ""           # frame of the pose: map, odom, or "" (none known yet)
         self._plan_xy: list = []
         self._nav_state = ""
         self._visible: set = set()       # pages shown on screen right now
@@ -372,7 +374,6 @@ class MainWindow(QMainWindow):
         title, body = helptext.page_help(key, i18n.current)
         dlg = QDialog(self)
         dlg.setWindowTitle(f"? {title}")
-        dlg.resize(620, 560)
         v = QVBoxLayout(dlg)
         view = QTextBrowser()
         view.setOpenExternalLinks(True)
@@ -381,6 +382,14 @@ class MainWindow(QMainWindow):
         box = QDialogButtonBox(QDialogButtonBox.Close)
         box.rejected.connect(dlg.reject)
         v.addWidget(box)
+        # as tall as the text (a short page gets a short window), within the screen
+        dlg.resize(620, 500)
+        dlg.layout().activate()
+        doc = view.document()
+        doc.setTextWidth(view.viewport().width())
+        need = int(doc.size().height() + 0.999) + 2 * view.frameWidth() + 2
+        room = (self.screen().availableGeometry().height() if self.screen() else 900) - 120
+        dlg.resize(620, max(260, min(dlg.height() - view.height() + need, room)))
         self._help_dialog = dlg            # kept: tests read it
         dlg.setModal(False)
         dlg.show()
@@ -845,6 +854,7 @@ class MainWindow(QMainWindow):
     _connect_t = -1e9
 
     def _connect_now(self, profile: RobotProfile) -> None:
+        self._odom_seen = False
         self.profiles.set_active(profile.id)
         self._switch_robot(profile)
         self._bring_layout(profile)
@@ -1311,6 +1321,7 @@ class MainWindow(QMainWindow):
         self._odom_y = float(pos.get("y", 0.0))
         self._odom_yaw = quat_to_yaw(p.get("orientation", {}))
         self._odom_v = float(m.get("twist", {}).get("twist", {}).get("linear", {}).get("x", 0.0))
+        self._odom_seen = True
         self._pose_dirty = True
 
     def _on_tf(self, _m=None) -> None:
@@ -1321,11 +1332,12 @@ class MainWindow(QMainWindow):
         if not self.ros.profile:
             return
         p = self.ros.profile.topics
-        pose = self.tf.pose_xyyaw(p.map_frame, p.base_frame)
+        pose, self._pose_frame = self.tf.pose_xyyaw(p.map_frame, p.base_frame), "map"
         if pose is None:
-            pose = self.tf.pose_xyyaw(p.odom_frame, p.base_frame)
+            pose, self._pose_frame = self.tf.pose_xyyaw(p.odom_frame, p.base_frame), "odom"
         if pose is None:
             pose = (self._odom_x, self._odom_y, self._odom_yaw)
+            self._pose_frame = "odom" if self._odom_seen else ""
         self._robot_x, self._robot_y, self._robot_yaw = pose
 
         laser_pose = self.tf.pose_xyyaw(p.map_frame, p.laser_frame)
@@ -1351,7 +1363,8 @@ class MainWindow(QMainWindow):
             for v in views:
                 v.set_robot_pose(*pose)
             self.p_mission.update_robot_pose(*pose, draw="mission" in self._visible)
-            self.p_3d.update_robot_pose(*pose)
+            if self._pose_frame:        # never a made-up (0, 0) in the trajectory
+                self.p_3d.update_robot_pose(*pose, frame=self._pose_frame)
             self.p_nav.places.set_pose(*pose)
             self._track_pose(pose)
             self._track_run_distance(pose)

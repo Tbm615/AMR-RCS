@@ -457,6 +457,37 @@ def test_packs() -> None:
     check("an unknown model kind is auto", RobotProfile.from_dict(d).model == "auto")
 
 
+def test_trajectory() -> None:
+    print("\n[3D trajectory: no made-up start, one frame at a time]")
+    w = MainWindow()
+    w.resize(1200, 800)
+    w.show()
+    w._show("3d")
+    app.processEvents()
+    t3 = w.p_3d
+    w._pose_dirty = True
+    w._render()
+    check("no pose known: nothing drawn, no (0, 0) kept", t3._traj == [] and t3._robot is None, str(t3._traj[:3]))
+    w._on_odom({"pose": {"pose": {"position": {"x": 0.5, "y": 0.0}, "orientation": {"w": 1.0}}}})
+    w._render()
+    check("odometry: the trajectory starts there", [p[:2] for p in t3._traj] == [(0.5, 0.0)], str(t3._traj))
+
+    def tf(parent, child, x, y):
+        return {"transforms": [{"header": {"frame_id": parent, "stamp": {"sec": 0, "nanosec": 0}},
+                                "child_frame_id": child,
+                                "transform": {"translation": {"x": x, "y": y, "z": 0.0},
+                                              "rotation": {"x": 0, "y": 0, "z": 0, "w": 1}}}]}
+    w.tf.ingest(tf("odom", "base_link", 0.6, 0.0))
+    w._pose_dirty = True
+    w._render()
+    check("odom TF: same frame, one trajectory", len(t3._traj) == 2, str(t3._traj))
+    w.tf.ingest(tf("map", "odom", 4.0, 3.0))
+    w._pose_dirty = True
+    w._render()
+    check("on the map now: started again, no jump line", [p[:2] for p in t3._traj] == [(4.6, 3.0)], str(t3._traj))
+    w.close()
+
+
 def main() -> int:
     test_builtin()
     test_workspace_urdf()
@@ -464,6 +495,7 @@ def main() -> int:
     test_files()
     test_top_view()
     test_views()
+    test_trajectory()
     test_connection_page()
     test_packs()
     print(f"\n--- {PASS} passed, {FAIL} failed ---", flush=True)

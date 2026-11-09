@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout,
+    QWidget,
 )
 
 from ...core.fleet import FleetMonitor, describe, heading, overall
@@ -32,6 +33,8 @@ class RobotCard(QFrame):
         self.setObjectName("Card")
         self.rid = profile.id
         self.model_of = model_of
+        self.setFixedWidth(390)                 # cards in rows, not one stretched over the page
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Maximum)
         v = QVBoxLayout(self)
         v.setContentsMargins(14, 12, 14, 12)
         head = QHBoxLayout()
@@ -50,8 +53,8 @@ class RobotCard(QFrame):
         self.addr = QLabel()
         self.addr.setProperty("muted", True)
         names.addWidget(self.addr)
-        names.addStretch(1)
         head.addLayout(names, 1)
+        head.setAlignment(names, Qt.AlignVCenter)
         v.addLayout(head)
         grid = QGridLayout()
         grid.setHorizontalSpacing(10)
@@ -153,6 +156,8 @@ class FleetPanel(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll = scroll
         self.body = QWidget()
         self.grid = QGridLayout(self.body)
         self.grid.setSpacing(12)
@@ -179,11 +184,35 @@ class FleetPanel(QWidget):
                 self.cards[p.id] = card
             else:
                 card.set_profile(p)
-        for i, p in enumerate(self.profiles.profiles):
-            self.grid.addWidget(self.cards[p.id], i // 3, i % 3)
+        self._place_cards()
         self.watched &= ids
         self.monitor.watch(self.profiles.profiles, self.watched)
         self.refresh()
+
+    CARD_W = 390 + 12
+
+    def _place_cards(self) -> None:
+        """As many cards per row as the page is wide."""
+        for c in self.cards.values():
+            self.grid.removeWidget(c)
+        width = self.scroll.viewport().width() if hasattr(self, "scroll") else 1200
+        cols = max(1, (width - 8) // self.CARD_W)
+        for r in range(self.grid.rowCount()):
+            self.grid.setRowStretch(r, 0)
+        for c in range(self.grid.columnCount()):
+            self.grid.setColumnStretch(c, 0)
+        for i, p in enumerate(self.profiles.profiles):
+            self.grid.addWidget(self.cards[p.id], i // cols, i % cols, Qt.AlignTop | Qt.AlignLeft)
+        self.grid.setColumnStretch(cols, 1)
+        self.grid.setRowStretch((len(self.profiles.profiles) + cols - 1) // cols, 1)
+        self._cols = cols
+
+    def resizeEvent(self, ev) -> None:
+        super().resizeEvent(ev)
+        if hasattr(self, "scroll"):
+            cols = max(1, (self.scroll.viewport().width() - 8) // self.CARD_W)
+            if cols != getattr(self, "_cols", 0):
+                self._place_cards()
 
     def _watch(self, rid: str, on: bool) -> None:
         (self.watched.add if on else self.watched.discard)(rid)

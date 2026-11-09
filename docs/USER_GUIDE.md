@@ -256,6 +256,8 @@ one you are using, as before. To see more than one page:
 - The round **?** next to **Layout** (or Shift+F1) explains the page on screen,
   in the app's language.
 
+  ![The ? guide of the Missions page](screenshots/help.png)
+
 Pages you cannot see (closed, or behind another tab) are not drawn, and the
 camera and 3D map only receive data while their page is on screen, so extra
 pages cost Wi-Fi only while you look at them.
@@ -737,6 +739,8 @@ until you delete the file; a run cut short by a crash of the app shows as
 
 ### Statistics
 
+![Schedule page with run reports and statistics](screenshots/schedule.png)
+
 At the bottom of the Schedule page, **Statistics** sums up a period (today, 7,
 30 or 365 days) from the run reports and the event log: missions run and how
 they ended (success rate over the runs tried), distance, time at work,
@@ -769,6 +773,8 @@ layout, open mission, saved map or SLAM, last position on each map.
 Removing a robot from the list leaves its data on the disk.
 
 ### Fleet page: watch them all
+
+![Fleet page](screenshots/fleet.png)
 
 The **Fleet** page shows every robot of the list as a card. Tick **Watch** on
 the ones to follow (remembered). Each watched robot gets a light connection of

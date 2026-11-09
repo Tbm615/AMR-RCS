@@ -12,6 +12,19 @@ WebSocket.
 
 ![2D map view with occupancy grid, scan, planned path and robot pose](docs/screenshots/map.png)
 
+<table>
+<tr>
+<td width="33%"><a href="docs/screenshots/robot.png"><img src="docs/screenshots/robot.png" alt="Robot programs page"></a><br><sub>Start bringup and Nav2 from the app</sub></td>
+<td width="33%"><a href="docs/screenshots/mission.png"><img src="docs/screenshots/mission.png" alt="Missions page"></a><br><sub>Looping missions</sub></td>
+<td width="33%"><a href="docs/screenshots/map3d.png"><img src="docs/screenshots/map3d.png" alt="3D map with the robot model"></a><br><sub>3D map with the robot's own model</sub></td>
+</tr>
+<tr>
+<td><a href="docs/screenshots/status.png"><img src="docs/screenshots/status.png" alt="Status page with robot health"></a><br><sub>Robot health at a glance</sub></td>
+<td><a href="docs/screenshots/fleet.png"><img src="docs/screenshots/fleet.png" alt="Fleet page"></a><br><sub>Fleet: every robot, E-STOP all</sub></td>
+<td><a href="docs/screenshots/schedule.png"><img src="docs/screenshots/schedule.png" alt="Schedule and statistics"></a><br><sub>Schedules, statistics, PDF reports</sub></td>
+</tr>
+</table>
+
 ## Features
 
 - **Robots:** profiles with address, topic and frame names and speed limits;
@@ -73,8 +86,9 @@ WebSocket.
   messages are decoded off the GUI thread, and it reconnects by itself after
   a Wi-Fi drop.
 
-Screenshots (taken from the app driving real Nav2 on a simulated robot) are in
-[`docs/screenshots/`](docs/screenshots/) and throughout the [user guide](docs/USER_GUIDE.md).
+Screenshots are in [`docs/screenshots/`](docs/screenshots/) and throughout the
+[user guide](docs/USER_GUIDE.md). They are taken from the app driving real Nav2
+on a simulated robot; the 3D map is one the real robot recorded.
 
 ## Run from source (developer)
 
@@ -121,7 +135,9 @@ E-STOP while driving (stopped in 0.55 s), a looping two-waypoint mission
 (4 legs) and teleop.
 
 All tests run headless with `QT_QPA_PLATFORM=offscreen`. With the sim running,
-`tests/screenshot_live.py` regenerates the screenshots in `docs/screenshots/`.
+`tests/screenshot_live.py` regenerates the screenshots in `docs/screenshots/`;
+`tests/screenshot_extra.py` takes the Robot programs and 3D Map ones (against
+the mock robot and a saved 3D map, see its header).
 
 ### Simulated robot with real Nav2 (`sim/`)
 

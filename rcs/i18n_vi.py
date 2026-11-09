@@ -229,7 +229,7 @@ TEXTS = {
     " Sign-in: not checked yet.": " Đăng nhập: chưa kiểm tra.", " This robot asks you to sign in.": " Robot này yêu cầu đăng nhập.",
     " No sign-in on this robot (its robot side has no gateway).": " Robot này không cần đăng nhập (phía robot chưa có cổng an ninh).",
     " Robot launcher online": " Trình khởi chạy robot đang chạy", "certificate not known yet": "chưa biết chứng chỉ",
-    "What this page does (Shift+F1)": "Hướng dẫn trang này (Shift+F1)",
+    "What this page does (Shift+F1)": "Hướng dẫn trang này (Shift+F1)", "no picture": "không có hình",
 }
 
 PATTERNS = [

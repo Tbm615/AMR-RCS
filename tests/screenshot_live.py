@@ -69,6 +69,7 @@ def main() -> int:
     w.p_conn._reload()
     w._on_connect(prof)
     assert wait_until(w.ros.is_connected, 15), "rosbridge not reachable - start sim/run_sim.sh"
+    w._show("map")                      # only the pages on screen draw the map
     assert wait_until(lambda: w.p_map.view.map_img.image is not None, 20)
     w.p_map.set_initial_pose.emit(*START)
     assert wait_until(lambda: w.tf.pose_xyyaw("map", "base_link") is not None, 30)
@@ -84,7 +85,7 @@ def main() -> int:
             break
     pump(4)
     for v in (w.p_map.view, w.p_nav.view):
-        v.center_on_robot(9.0)
+        v.center_on_robot(6.0)
     w.p_map.ck_lc.setChecked(True)
     shot(w, "map", "map")
     shot(w, "nav", "nav")
@@ -114,6 +115,27 @@ def main() -> int:
     shot(w, "mission", "mission")
     w.p_mission.stop_btn.click()
     pump(1)
+
+    # the run reports and the statistics of that run
+    w._show("schedule")
+    w.p_schedule.period.setCurrentIndex(w.p_schedule.period.findData(7))
+    w.p_schedule.show_stats()
+    shot(w, "schedule", "schedule")
+
+    # the robot on its Fleet card, watched over its own light connection
+    w.p_fleet.cards[prof.id].watch.setChecked(True)
+    wait_until(lambda: "online" in w.p_fleet.cards[prof.id].vals["link"].text(), 15)
+    pump(3)
+    shot(w, "fleet", "fleet")
+
+    # the ? button on the Missions page
+    w._show("mission")
+    pump(0.5)
+    dlg = w.show_help()
+    pump(0.5)
+    dlg.grab().save(str(OUT / "help.png"))
+    print(f"  wrote {(OUT / 'help.png').relative_to(ROOT)}", flush=True)
+    dlg.close()
 
     w.ros.disconnect_robot()
     pump(0.5)

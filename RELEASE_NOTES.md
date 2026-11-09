@@ -68,6 +68,11 @@ pinned on first use. A robot without users works as before.
   asks map_server for it.
 - Selecting another robot in the Connection list while connected no longer
   gives the robot being driven that robot's speed limits and size.
+- The 3D Map's trajectory no longer starts at the map's origin, with a straight
+  line to where the robot really is (a pose was drawn before any was known,
+  and odometry and map poses were joined into one line).
+- The Fleet page keeps its cards a readable width, in as many columns as fit,
+  instead of stretching one card over the page.
 - The tests no longer write to your own settings (one of them replaced the
   first robot of the list with a test robot).
 - **Robot side:** a rosbridge stopped with a plain `pkill` keeps port 9090 with
