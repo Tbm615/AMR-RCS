@@ -187,6 +187,17 @@ class ConnectionPanel(QWidget):
         right.addWidget(self.auto_ck)
         self.update_ck = QCheckBox("Tell me when a new version of RCS is out (asks GitHub once a day)")
         right.addWidget(self.update_ck)
+        lang_row = QHBoxLayout()
+        lang_row.addWidget(QLabel("Language / Ngôn ngữ"))
+        self.lang = QComboBox()
+        from ... import i18n
+        for code, name in i18n.LANGS.items():
+            self.lang.addItem(name, code)
+        lang_row.addWidget(self.lang)
+        self.lang_note = QLabel("")
+        self.lang_note.setProperty("muted", True)
+        lang_row.addWidget(self.lang_note, 1)
+        right.addLayout(lang_row)
 
         self.status_lbl = QLabel("not connected")
         self.status_lbl.setProperty("muted", True)

@@ -4,7 +4,9 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 |---|---|
 | `rcs-windows-x86_64.zip` | Windows 10/11. Unzip, run `rcs\rcs.exe`. |
 | `rcs-windows-x86_64-console.zip` | Same app; also opens a console window with logs, for troubleshooting. |
+| `rcs-windows-x86_64-setup.exe` | Windows installer: Start menu entry, uninstaller, no admin rights needed. |
 | `rcs-linux-x86_64.tar.gz` | Linux x86-64. `tar xzf rcs-linux-x86_64.tar.gz && ./rcs/rcs` |
+| `rcs_<version>_amd64.deb` | Ubuntu / Debian: `sudo apt install ./rcs_*.deb`, then `rcs` or the menu. |
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/b4lanc3/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
@@ -51,10 +53,19 @@ pinned on first use. A robot without users works as before.
   mission goes on from where it was.
 - **Remote alerts** (Events page): Telegram and/or e-mail on errors and, if
   chosen, warnings, at most once per event every 10 minutes.
+- **Statistics** (Schedule page): missions, success rate, distance, time at work,
+  battery used, E-STOPs and incidents over a period, saved as a PDF report.
+- **Installers**: a Windows installer and a .deb package, next to the zip and tar.gz.
+- **? button** (next to Layout, or Shift+F1): what the page on screen does.
+- **Tiếng Việt**: the app in Vietnamese or English (Connection page, applied at
+  the next start).
 - **New versions**: the app tells you when a newer release is out (asks GitHub
   once a day, can be turned off), and when the robot side is older than it needs.
 
 **Fixes**
+- The 2D Map could stay empty when Nav2 was started from the app after
+  connecting (the saved map went out before rosbridge listened): the app now
+  asks map_server for it.
 - Selecting another robot in the Connection list while connected no longer
   gives the robot being driven that robot's speed limits and size.
 - The tests no longer write to your own settings (one of them replaced the

@@ -88,6 +88,9 @@ def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(qt_argv)
+    from . import i18n
+    from .core.profile import load_settings
+    i18n.install(load_settings().get("lang", "en"))     # before any window is built
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORG_NAME)
     theme.apply(app)

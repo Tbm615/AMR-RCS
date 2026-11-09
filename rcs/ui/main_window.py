@@ -33,6 +33,7 @@ from ..core.alerts import Alerts
 from ..core.charging import ChargeConfig, ChargeKeeper
 from ..core import gateway as gwc
 from ..core import versions
+from .. import i18n
 from ..core import permissions
 from ..core import robot_model
 from ..core.robot_data import RobotState, migrate_legacy, robot_dir
@@ -227,7 +228,21 @@ class MainWindow(QMainWindow):
         self.layout_menu.aboutToShow.connect(self._fill_layout_menu)
         self._fill_layout_menu()
         self.layout_btn.setMenu(self.layout_menu)
-        sv.addWidget(self.layout_btn)
+        lrow = QHBoxLayout()
+        lrow.setContentsMargins(0, 0, 8, 0)
+        lrow.setSpacing(4)
+        lrow.addWidget(self.layout_btn, 1)
+        self.help_btn = QPushButton("?")
+        self.help_btn.setObjectName("HelpButton")
+        self.help_btn.setFixedSize(30, 30)
+        self.help_btn.setCursor(Qt.PointingHandCursor)
+        self.help_btn.setToolTip("What this page does (Shift+F1)")
+        self.help_btn.setStyleSheet("QPushButton#HelpButton { border-radius: 15px; font-weight: 700; padding: 0; "
+                                    "background: #1f2533; border: 1px solid #3b82f6; color: #8ab4ff; }"
+                                    "QPushButton#HelpButton:hover { background: #24304a; color: #ffffff; }")
+        self.help_btn.clicked.connect(self.show_help)
+        lrow.addWidget(self.help_btn)
+        sv.addLayout(lrow)
 
         est_frame = QFrame()
         est_frame.setObjectName("EstopBar")
@@ -267,6 +282,7 @@ class MainWindow(QMainWindow):
         self.p_mission.runs = self.runs
         self.p_mission.soc = self._soc_now
         self.p_schedule = SchedulePanel(self.schedules, self.runs, self.missions)
+        self.p_schedule.events = self.events
         self.p_fleet = FleetPanel(self.profiles, self.fleet, set(self.settings.get("fleet_watch", [])),
                                   model_of=self.robot_model_of)
 
@@ -306,6 +322,9 @@ class MainWindow(QMainWindow):
         self.p_conn.auto_ck.toggled.connect(lambda on: save_settings({"auto_connect": on}))
         self.p_conn.update_ck.setChecked(bool(self.settings.get("check_updates", True)))
         self.p_conn.update_ck.toggled.connect(self._set_check_updates)
+        lang = self.settings.get("lang", "en")
+        self.p_conn.lang.setCurrentIndex(max(0, self.p_conn.lang.findData(lang)))
+        self.p_conn.lang.currentIndexChanged.connect(self._set_language)
         self._shortcuts()
 
         # status bar
@@ -344,6 +363,28 @@ class MainWindow(QMainWindow):
 
     def active_page(self) -> str:
         return self.workspace.active
+
+    def show_help(self, key: str = "") -> "QDialog":
+        """The guide of the page on screen (or key), in the app's language."""
+        from PySide6.QtWidgets import QDialogButtonBox, QTextBrowser
+        from .. import help as helptext
+        key = key or self.active_page() or "conn"
+        title, body = helptext.page_help(key, i18n.current)
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"? {title}")
+        dlg.resize(620, 560)
+        v = QVBoxLayout(dlg)
+        view = QTextBrowser()
+        view.setOpenExternalLinks(True)
+        view.setHtml(body)
+        v.addWidget(view, 1)
+        box = QDialogButtonBox(QDialogButtonBox.Close)
+        box.rejected.connect(dlg.reject)
+        v.addWidget(box)
+        self._help_dialog = dlg            # kept: tests read it
+        dlg.setModal(False)
+        dlg.show()
+        return dlg
 
     def apply_layout(self, name: str) -> None:
         self.workspace.apply_preset(name, self.workspace.active or "conn")
@@ -396,6 +437,7 @@ class MainWindow(QMainWindow):
             key(f"F{i + 1}", lambda k=page: self._show(k))
         for i, (name, _label) in enumerate(PRESETS):
             key(f"Ctrl+{i + 1}", lambda n=name: self.apply_layout(n))
+        key("Shift+F1", lambda: self.show_help())
         # F12 only engages, from any window of the app: a stuck key or a second
         # press must never release the E-STOP
         key("F12", lambda: self._set_estop(True), Qt.ApplicationShortcut)
@@ -439,6 +481,12 @@ class MainWindow(QMainWindow):
             save_settings(stamp)
         from .panels.account import run_bg
         run_bg(versions.check, done)
+
+    def _set_language(self, _i: int) -> None:
+        code = self.p_conn.lang.currentData()
+        save_settings({"lang": code})
+        self.settings["lang"] = code
+        self.p_conn.lang_note.setText("Restart RCS to change the language." if code != i18n.current else "")
 
     def _set_check_updates(self, on: bool) -> None:
         self.settings["check_updates"] = on
@@ -879,6 +927,8 @@ class MainWindow(QMainWindow):
         self._show_user(p)
 
     def _show_user(self, p) -> None:
+        if p is not None:
+            self.p_schedule.robot_name = p.name
         self.sb_user.setText(f"   👤 {p.user} · {p.role}" if p and p.token and p.role else "")
 
     def _apply_role(self, role: str) -> None:

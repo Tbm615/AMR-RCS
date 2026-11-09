@@ -91,6 +91,15 @@ jobs:
       - name: Going to charge by itself
         run: python tests/test_charging.py
 
+      - name: The app in Vietnamese
+        run: python tests/test_i18n.py
+
+      - name: Statistics and the PDF report
+        run: python tests/test_stats.py
+
+      - name: The ? button
+        run: python tests/test_help.py
+
       - name: Responsiveness, reconnect and 3D map under robot-sized traffic
         # shared CI runners are slower than an operator PC: allow longer stalls
         env:
@@ -106,6 +115,10 @@ jobs:
       - name: Package Linux build
         if: runner.os == 'Linux'
         run: tar czf rcs-linux-x86_64.tar.gz -C dist rcs
+
+      - name: Linux package (.deb)
+        if: runner.os == 'Linux'
+        run: bash installer/make_deb.sh .
 
       - name: Package Windows console build
         if: runner.os == 'Windows'
@@ -127,11 +140,25 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path dist/rcs -DestinationPath rcs-windows-x86_64.zip
 
+      # An installer too; does not hold the release up if Inno Setup is missing
+      - name: Windows installer (Inno Setup)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path rcs/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; }
+          & $iscc "/DAppVersion=$v" installer\rcs.iss
+          Copy-Item dist\rcs-windows-x86_64-setup.exe .
+
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Linux'
         with:
           name: rcs-linux-x86_64
-          path: rcs-linux-x86_64.tar.gz
+          path: |
+            rcs-linux-x86_64.tar.gz
+            rcs_*.deb
 
       - uses: actions/upload-artifact@v4
         if: runner.os == 'Windows'
@@ -140,6 +167,7 @@ jobs:
           path: |
             rcs-windows-x86_64.zip
             rcs-windows-x86_64-console.zip
+            rcs-windows-x86_64-setup.exe
 
   # On a version tag, publish the tested builds as a GitHub Release.
   release:

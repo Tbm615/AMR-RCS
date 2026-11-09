@@ -60,6 +60,10 @@ WebSocket.
 - **Going to charge by itself:** below a set charge the mission pauses, the
   robot drives to its charging place, and the mission goes on once charged.
 - **Remote alerts:** Telegram or e-mail when something goes wrong.
+- **Statistics:** missions, success rate, distance, incidents over a period,
+  saved as a PDF report.
+- **Vietnamese or English**, a **?** button explaining the page on screen, and
+  installers for Windows and Ubuntu.
 - **Health and support:** the Status page says what is wrong with the robot and
   what to do; one click saves a diagnostic bundle (no secrets in it); crash
   reports; a notice when a new release is out.
@@ -103,6 +107,9 @@ python -m rcs
 | `tests/test_diagnostics.py` | nothing | health checks, the diagnostic bundle (no tokens or passwords in it), crash reports, an app that did not close properly |
 | `tests/test_alerts.py` | nothing (Telegram and mail faked) | which events go out, not too often, failures noted without looping, no bot token in bundles |
 | `tests/test_charging.py` | nothing (battery and Nav2 made up) | going to charge below the set charge, the mission paused and resumed, retries, E-STOP, the operator taking over |
+| `tests/test_i18n.py` | nothing | the app in Vietnamese: every page builds, texts translated, patterns for texts with numbers, rich text |
+| `tests/test_stats.py` | nothing | statistics from the run reports and events, the report, the PDF |
+| `tests/test_help.py` | nothing | the ? button: a guide for every page, in English and Vietnamese |
 | `tests/test_robot_model.py` | nothing (URDF, STL, OBJ, DAE written by the test) | the Hinson's drive wheels in their wells (and the workspace URDF, if there), URDF import, files from anyone, the 2D shape and Fleet icon, a model per robot, packs, another robot selected while connected |
 | `tests/test_built_binary_e2e.py` | a build in `dist/` | the packaged binary does the same |
 | `tests/test_sim_nav2.py` | ROS 2 Humble on the PC, `sim/run_sim.sh` running | the app drives **real Nav2** through **real rosbridge** (28 checks) |
@@ -170,9 +177,13 @@ Download the archives from the run's Artifacts section on the Actions tab.
 ## Robot side
 
 The robot runs `rosbridge_server` and the small **RCS launcher**
-([`robot/`](robot/)), both started at boot by a crontab entry. After that
-one-time setup, the operator powers on the robot and starts bringup and Nav2
-from the app. Setup: [`robot/README.md`](robot/README.md).
+([`robot/`](robot/)), both started at boot by a crontab entry, with the
+robot's own E-STOP gate, the battery service and, once there are users, the
+sign-in gateway. Copy the release's `robot/` folder to the robot and run
+`bash install_robot.sh` (it checks what is missing, sets the boot entry and
+starts it all; `--dry-run` first to see). After that the operator powers on
+the robot and starts bringup and Nav2 from the app. Details:
+[`robot/README.md`](robot/README.md).
 
 ## Safety notes
 

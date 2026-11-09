@@ -18,6 +18,17 @@ E-STOP gate and the battery service after 1 s, the others after 5 s).
 
 ## Install
 
+In one go, on the robot, from the release's `robot/` folder copied over:
+
+```bash
+bash install_robot.sh --dry-run     # what it would do
+bash install_robot.sh               # copy to ~/tbm_test/rcs_robot, start at boot, start now
+```
+
+It checks ROS 2, the apt packages and the Python modules it needs and says
+what is missing, keeps the E-STOP latch, users, audit and battery logs, and is
+safe to run again to update. By hand, it is:
+
 ```bash
 sudo apt install ros-humble-rosbridge-suite ros-humble-compressed-image-transport
 mkdir -p ~/tbm_test/rcs_robot && cp robot/* ~/tbm_test/rcs_robot/

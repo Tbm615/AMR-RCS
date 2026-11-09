@@ -139,6 +139,28 @@ class SchedulePanel(QWidget):
         row.addWidget(self.export_btn)
         bv.addLayout(row)
         split.addWidget(bottom)
+
+        stats = QGroupBox("Statistics")
+        sv = QVBoxLayout(stats)
+        srow = QHBoxLayout()
+        self.period = QComboBox()
+        for text, days in (("Today", 1), ("Last 7 days", 7), ("Last 30 days", 30), ("Last 365 days", 365)):
+            self.period.addItem(text, days)
+        self.period.setCurrentIndex(1)
+        self.period.currentIndexChanged.connect(lambda _i: self.show_stats())
+        pdf = QPushButton("Save PDF…")
+        pdf.clicked.connect(self._ask_pdf)
+        srow.addWidget(QLabel("Period"))
+        srow.addWidget(self.period)
+        srow.addStretch(1)
+        srow.addWidget(pdf)
+        sv.addLayout(srow)
+        from PySide6.QtWidgets import QTextBrowser
+        self.stats_view = QTextBrowser()
+        sv.addWidget(self.stats_view, 1)
+        split.addWidget(stats)
+        self.events = None          # the robot's EventLog, set by the main window
+        self.robot_name = ""
         split.setSizes([260, 420])
 
         runs.changed.connect(self.refresh_reports)
@@ -154,6 +176,42 @@ class SchedulePanel(QWidget):
     def _mission_name(self, mid: str) -> str:
         m = self.missions.get(mid)
         return m.name if m else "(deleted mission)"
+
+    def stats_html(self) -> str:
+        from ...core import stats
+        days = int(self.period.currentData() or 7)
+        now = time.time()
+        today = time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1))
+        since = today - (days - 1) * 86400
+        events = self.events.events if self.events is not None else []
+        summ = stats.summarize(self.runs.runs, events, since, now + 1)
+        return stats.report_html(self.robot_name or "Robot", summ, stats.daily(self.runs.runs, since, days))
+
+    def show_stats(self) -> None:
+        self.stats_view.setHtml(self.stats_html())
+
+    def _ask_pdf(self) -> None:
+        name = f"rcs_report_{time.strftime('%Y%m%d')}.pdf"
+        path, _ = QFileDialog.getSaveFileName(self, "Save the report", name, "PDF (*.pdf)")
+        if path:
+            self.save_pdf(path)
+
+    def save_pdf(self, path: str) -> str:
+        from PySide6.QtGui import QPageSize, QPdfWriter, QTextDocument
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        doc = QTextDocument()
+        doc.setHtml(self.stats_html())
+        w = QPdfWriter(path)
+        w.setPageSize(QPageSize(QPageSize.A4))
+        w.setResolution(120)
+        doc.setPageSize(w.pageLayout().paintRectPixels(w.resolution()).size().toSizeF())
+        doc.print_(w)
+        return path
+
+    def showEvent(self, ev) -> None:
+        super().showEvent(ev)
+        self.show_stats()
 
     def refresh(self) -> None:
         sel = self._selected()

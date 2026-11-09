@@ -165,34 +165,45 @@ def main() -> int:
     check("only on the change", not calls)
 
     print("\n[a saved map sent once, before rosbridge heard it]")
-    mapt = s.profile.topics.map
-    s._subs[mapt] = Sub()
-    calls.clear()
+    import rcs.core.ros_client as rc
+    asked, got = [], []
+
+    class FakeService:
+        def __init__(self, ros, name, typ):
+            self.name = name
+
+        def call(self, req, ok, err):
+            asked.append(self.name)
+            ok({"map": {"info": {"width": 0, "height": 0}, "data": []}} if answer[0] else {})
+    answer = [False]
+    real_service = rc.roslibpy.Service
+    rc.roslibpy.Service = FakeService
+    s._on_map = lambda m, _o=s._on_map: (got.append(m), _o(m))
     nav = lambda state: {"data": json.dumps({"stacks": {"bringup": {"state": "running"},       # noqa: E731
                                                         "nav": {"state": state}}})}
     s._on_launcher_state(nav("starting"))
     s._on_launcher_state(nav("running"))
-    check("Nav2 just up: give the map a moment", not calls, f"{calls}")
+    check("Nav2 just up: give the map a moment", not asked, f"{asked}")
     s._nav_up_t -= 4.0
     s._on_launcher_state(nav("running"))
-    check("no map 3 s after Nav2 came up: asked again", calls == ["off", mapt], f"{calls}")
+    check("no map 3 s after Nav2 came up: asked map_server for it", asked == ["/map_server/map"], f"{asked}")
     s._on_launcher_state(nav("running"))
-    check("not every second", len(calls) == 2)
-    s._map_retry_t -= 10.0
+    check("not every second", len(asked) == 1)
+    s._map_retry_t -= 11.0
+    answer[0] = True
     s._on_launcher_state(nav("running"))
-    check("again 5 s later while none comes", len(calls) == 4)
-    s._on_map({"info": {"width": 0, "height": 0}, "data": []})
+    check("asked again later, and the answer is the map", len(asked) == 2 and got, f"{asked} {len(got)}")
     s._map_retry_t = -1e9
-    calls.clear()
+    asked.clear()
     s._on_launcher_state(nav("running"))
-    check("map arrived: no more asking", not calls, f"{calls}")
+    check("map here: no more asking", not asked, f"{asked}")
     s._map_t -= 60.0                    # that map came a minute ago
     s._on_launcher_state(nav("stopped"))
     s._on_launcher_state(nav("running"))
     s._nav_up_t -= 4.0
     s._on_launcher_state(nav("running"))
-    check("Nav2 started again: the new map is waited for again", calls == ["off", mapt], f"{calls}")
-
+    check("Nav2 started again: the new map is asked for", asked == ["/map_server/map"], f"{asked}")
+    rc.roslibpy.Service = real_service
 
     empty = RosClient(profile=RobotProfile.new("t"))
     check("no TF at all: map, reported as an error by the caller", empty._world_frame() == "map")

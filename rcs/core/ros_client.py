@@ -557,26 +557,31 @@ class RosClient(QObject):
         self._map_t = time.monotonic()
         self._decoder.submit("map", self._dec_map, m)
 
-    MAP_RETRY_S = 5.0
+    MAP_RETRY_S = 10.0
+    MAP_SERVICE = "/map_server/map"         # nav_msgs/srv/GetMap of Nav2's map_server
 
     def refresh_map(self) -> None:
-        """Ask for /map again, like /tf_static: map_server sends a saved map
-        once, when Nav2 comes up. Subscribed before that (the app connects,
-        then Nav2 is started from it), rosbridge subscribes volatile and the
-        map can go by before the two match: the 2D Map stayed empty."""
+        """Ask map_server for the map: it sends a saved map once, when Nav2
+        comes up. Subscribed before that (the app connects, then Nav2 is
+        started from it), the map can go by before rosbridge's subscription
+        matches, and subscribing again does not help: rosbridge keeps one
+        subscription per topic for a while after it is dropped. GetMap answers
+        whatever happened before."""
         now = time.monotonic()
         if now - self._map_retry_t < self.MAP_RETRY_S or not self._ros or not self.profile:
             return
         self._map_retry_t = now
-        name = self.profile.topics.map
-        with self._topic_lock:
-            sub = self._subs.pop(name, None)
-            if sub is not None:
-                try:
-                    sub.unsubscribe()
-                except Exception:  # noqa: BLE001
-                    pass
-            self._subscribe(name, "nav_msgs/msg/OccupancyGrid", self._on_map)
+        gen = self._gen
+
+        def answer(r) -> None:              # network thread
+            m = (r or {}).get("map")
+            if gen == self._gen and isinstance(m, dict) and m.get("info"):
+                self._on_map(m)
+        try:
+            roslibpy.Service(self._ros, self.MAP_SERVICE, "nav_msgs/srv/GetMap").call(
+                roslibpy.ServiceRequest({}), answer, lambda _e: None)
+        except Exception:  # noqa: BLE001 - no map_server (SLAM): the topic will do
+            pass
 
     def _on_tf(self, m: dict) -> None:              # network thread; cheap
         self._mark("tf")

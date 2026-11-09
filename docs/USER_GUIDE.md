@@ -212,6 +212,10 @@ reconnecting every 2 seconds until you click **Disconnect**.
 Tick **Connect to the last robot when the app starts** on the Connection page
 to skip this step next time.
 
+**Language.** **Language / Ngôn ngữ** on the Connection page: English or Tiếng
+Việt, applied the next time the app starts. A text not translated yet stays in
+English.
+
 **New versions.** With **Tell me when a new version of RCS is out** ticked (the
 default), the app asks GitHub once a day for the list of releases (nothing
 about your PC is sent) and shows **⬆ RCS vX is out** in the status bar, a link
@@ -249,6 +253,8 @@ one you are using, as before. To see more than one page:
 - The layout, including page windows and their position, is kept when you
   close the app and comes back at the next start.
 - The 3D Map can be split and tabbed but not opened in its own window yet.
+- The round **?** next to **Layout** (or Shift+F1) explains the page on screen,
+  in the app's language.
 
 Pages you cannot see (closed, or behind another tab) are not drawn, and the
 camera and 3D map only receive data while their page is on screen, so extra
@@ -728,6 +734,15 @@ until you delete the file; a run cut short by a crash of the app shows as
 *interrupted*.
 
 ---
+
+### Statistics
+
+At the bottom of the Schedule page, **Statistics** sums up a period (today, 7,
+30 or 365 days) from the run reports and the event log: missions run and how
+they ended (success rate over the runs tried), distance, time at work,
+waypoints reached, retries, battery used, E-STOPs, stops for a lost app, trips
+to charge, errors and warnings, per mission and per day, and why runs were
+skipped. **Save PDF…** writes it as a one-page report.
 
 ## 14. Several robots
 

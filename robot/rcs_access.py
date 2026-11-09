@@ -291,7 +291,7 @@ class Rules:
         self.viewer_topics = {"/rcs/app/heartbeat"}
         self.read_services = {"/rosapi/topics", "/rosapi/services", "/rosapi/nodes", "/rosapi/topic_type",
                               "/rosapi/topics_for_type", "/rosapi/service_type", "/rosapi/get_time",
-                              "/rosapi/topics_and_raw_types"}
+                              "/rosapi/topics_and_raw_types", "/map_server/map"}
         self.launcher = {"start": "operator", "stop": "operator", "save_map": "operator",
                          "map_preview": "viewer", "map_get": "viewer", "map_put": "operator"}
         self.battery = {"log_list": "viewer", "log_get": "viewer", "log_delete": "admin"}
