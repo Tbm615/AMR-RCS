@@ -76,6 +76,11 @@ def main() -> int:
 
     def after_connect():
         # we're connected (or trying); send a teleop command, then a goal
+        cam_subs["map3d"] = cam_subscribed()      # 3D map on every page (the default) takes the color too
+        w.p_3d.keep_bg.setChecked(False)          # the camera page alone from here on
+        QTimer.singleShot(1500, drive)            # the unsubscribe reaches the robot meanwhile
+
+    def drive():
         w.ros.publish_cmd_vel(0.2, 0.1)
         results["cmdvel_sent"] = True
         cam_subs["idle"] = cam_subscribed()
@@ -147,7 +152,9 @@ def main() -> int:
         pos = goal[-1]["msg"]["pose"]["position"]
         check("  goal x matches", abs(float(pos["x"]) - 1.5) < 0.05)
         check("  goal y matches", abs(float(pos["y"]) - 0.8) < 0.05)
-    check("camera not subscribed before its page is opened", cam_subs.get("idle") is False)
+    check("3D map on every page: the camera's color is taken from the start", cam_subs.get("map3d") is True)
+    check("camera not subscribed before its page is opened (3D map only on its page)",
+          cam_subs.get("idle") is False)
     check("camera subscribed while its page is open", cam_subs.get("open") is True)
     check("camera unsubscribed after leaving its page", cam_subs.get("closed") is False)
     check("map subscribed", "/map" in subs or stats.get("map") is not None)

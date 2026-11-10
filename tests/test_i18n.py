@@ -74,6 +74,18 @@ def main() -> int:
     hs = [r[1].text() for r in w.p_status.h_rows if not r[1].isHidden()]
     check("health lines translated", "Kết nối" in hs, str(hs))
     check("language choice offered", w.p_conn.lang.count() == 2 and w.p_conn.lang.findData("vi") >= 0)
+    zb = w.p_map.zones
+    check("zones box", zb.title() == "Vùng cấm và vùng giảm tốc" and zb.add_keep.text() == "+ Vùng cấm"
+          and zb.save_btn.text() == "Lưu lên robot" and "Kết nối robot" in zb.where.text(), zb.where.text())
+    zb.connected, zb.available, zb.map_name, zb.loaded = True, True, "kho", True
+    zb.add_drawn("keepout", [[0, 0], [1, 0], [1, 1]])
+    check("a new zone named in Vietnamese, listed in Vietnamese", zb.zones[0]["name"] == "Vùng cấm 1"
+          and zb.list.item(0).text().endswith("Vùng cấm 1 · cấm"), zb.list.item(0).text())
+    w.p_teleop.set_zone_note("info", ["In the slow zone Hall: Nav2 drives at most 40 % here.",
+                                      "Manual driving is not limited by zones."])
+    check("Teleop zone note, sentence by sentence", w.p_teleop.zone_note.text()
+          == "Đang trong vùng chậm Hall: Nav2 chạy tối đa 40 % ở đây. Lái tay không bị giới hạn bởi vùng.",
+          w.p_teleop.zone_note.text())
     w.close()
     print(f"\n--- {PASS} passed, {FAIL} failed ---", flush=True)
     return 1 if FAIL else 0

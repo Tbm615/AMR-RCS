@@ -3,6 +3,9 @@
   robot  docs/screenshots/robot.png: the Robot programs page, against the mock
          robot (tests/mock_rosbridge.py) listing the maps of a folder.
              QT_QPA_PLATFORM=offscreen python tests/screenshot_extra.py robot <maps folder>
+  zones  docs/screenshots/zones.png: keepout and speed zones on the 2D Map,
+         saved on the mock robot, on map23_04 of that folder.
+             QT_QPA_PLATFORM=offscreen python tests/screenshot_extra.py zones <maps folder>
   3d     docs/screenshots/map3d.png: the 3D Map with a saved 3D map (PLY), the
          2D map under it and the robot's model in it. Needs a real display
          (OpenGL); the picture is scaled to 1440 x 900 on a HiDPI screen.
@@ -97,21 +100,71 @@ def save(w, name: str) -> None:
     print(f"  wrote {path.relative_to(ROOT)}", flush=True)
 
 
-def robot_page(w, maps: str) -> None:
+def start_mock(w, maps: str, quiet_map: bool = False):
+    """The mock robot listing the maps of a folder, connected. quiet_map: the
+    app does not take the mock's own map and pose (a real map is shown)."""
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
     s.close()
     bridge = subprocess.Popen([sys.executable, __file__, "--mock", maps, "--robot", "--heavy",
                                "--port", str(port), "--name", "Hinson robot"], cwd=str(ROOT))
+    prof = w.profiles.active()
+    prof.host, prof.port = "127.0.0.1", port
+    if quiet_map:
+        prof.topics.map, prof.topics.odom = "/rcs_shot/map", "/rcs_shot/odom"
+        prof.topics.base_frame = "rcs_shot_base"
+    w.profiles.upsert(prof)
+    w.p_conn._reload()
+    time.sleep(1.5)
+    w._on_connect(prof)
+    assert wait_until(w.ros.is_connected, 15), "the mock robot did not answer"
+    return bridge
+
+
+def zones_page(w, maps: str) -> None:
+    bridge = start_mock(w, maps, quiet_map=True)
     try:
-        prof = w.profiles.active()
-        prof.host, prof.port = "127.0.0.1", port
-        w.profiles.upsert(prof)
-        w.p_conn._reload()
-        time.sleep(1.5)
-        w._on_connect(prof)
-        assert wait_until(w.ros.is_connected, 15), "the mock robot did not answer"
+        meta, pgm = map_files.read_map(Path(maps) / "map23_04.yaml")
+        wd, ht = map_files.pgm_size(pgm)
+        img = np.frombuffer(pgm[-wd * ht:], np.uint8).reshape(ht, wd)[::-1]
+        occ = np.where(img < 100, 100, np.where(img > 230, 0, -1)).astype(np.int8)
+        ox, oy, _ = meta["origin"]
+        msg = {"header": {"frame_id": "map"}, "info": {"width": wd, "height": ht, "resolution": float(meta["resolution"]),
+               "origin": {"position": {"x": ox, "y": oy, "z": 0.0}, "orientation": {"w": 1.0}}},
+               "data": occ.ravel().tolist()}
+        w._show("map")
+        w.p_map.view.set_occupancy(msg)
+        w.ros.send_launcher_cmd("start", stack="bringup")
+        pump(1.5)
+        w.ros.send_launcher_cmd("start", stack="nav", mode="map", map="map23_04")
+        zb = w.p_map.zones
+        assert wait_until(lambda: zb.loaded and zb.map_name == "map23_04", 10), "zones not loaded"
+
+        def box(x0, y0, x1, y1):
+            return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+        zb.speed.setValue(40)
+        z = zb.add_drawn("slow", box(2.6, -6.0, 4.4, -4.2))
+        zb.rename("Charging dock")
+        zb.add_drawn("keepout", [[2.75, -7.6], [3.85, -7.6], [3.85, -6.8], [3.3, -6.5], [2.75, -6.8]])
+        zb.rename("Pallets")
+        zb.save_btn.click()
+        assert wait_until(lambda: not zb.dirty() and zb.applied, 8), "not saved"
+        zb.list.setCurrentRow(1)
+        w.p_map.ck_scan.setChecked(False)
+        w.p_map.view.getPlotItem().vb.setRange(xRange=(-0.5, 7.5), yRange=(-9.5, -2.0), padding=0)
+        pump(1.0)
+        save(w, "zones.png")
+        w.ros.disconnect_robot()
+        pump(0.5)
+    finally:
+        bridge.terminate()
+        bridge.wait(5)
+
+
+def robot_page(w, maps: str) -> None:
+    bridge = start_mock(w, maps)
+    try:
         w._show("robot")
         page = w.p_robot
         assert wait_until(page.base.start_btn.isEnabled, 15), "launcher not online"
@@ -172,7 +225,7 @@ def map3d(w, folder: Path) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) < 3 or sys.argv[1] not in ("robot", "3d"):
+    if len(sys.argv) < 3 or sys.argv[1] not in ("robot", "zones", "3d"):
         print(__doc__)
         return 2
     theme.apply(app)
@@ -181,6 +234,8 @@ def main() -> int:
     w.show()
     if sys.argv[1] == "robot":
         robot_page(w, sys.argv[2])
+    elif sys.argv[1] == "zones":
+        zones_page(w, sys.argv[2])
     else:
         map3d(w, Path(sys.argv[2]))
     return 0

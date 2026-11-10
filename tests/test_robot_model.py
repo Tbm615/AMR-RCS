@@ -488,6 +488,47 @@ def test_trajectory() -> None:
     w.close()
 
 
+def test_unlocalized() -> None:
+    print("\n[before it is localized: not in the corner at (0, 0)]")
+    w = MainWindow()
+    w.resize(1200, 800)
+    w.show()
+    w._show("map")
+    app.processEvents()
+    # a 10 m x 8 m room, walls all round, origin at its corner (as test_rooms)
+    g = np.zeros((160, 200), np.int8)
+    g[:3, :] = g[-3:, :] = g[:, :3] = g[:, -3:] = 100
+    msg = {"header": {"frame_id": "map"}, "info": {"width": 200, "height": 160, "resolution": 0.05,
+           "origin": {"position": {"x": 0.0, "y": 0.0}, "orientation": {"w": 1.0}}}, "data": g.ravel().tolist()}
+    w._on_map(msg)
+    w._on_odom({"pose": {"pose": {"position": {"x": 0.0, "y": 0.0}, "orientation": {"w": 1.0}}}})
+    w._render()
+    v = w.p_map.view
+    x, y = v._robot_xy
+    check("drawn in the middle of the room, not at (0, 0)", abs(x - 5.0) < 0.3 and abs(y - 4.0) < 0.3,
+          f"({x:.2f}, {y:.2f})")
+    check("faded, and says why", not v.localized and v.unloc_text.isVisible()
+          and "initial pose" in v.unloc_text.textItem.toPlainText())
+    w._nav_map = "room"
+    w.robot_state.update(last_pose={"room": [2.0, 6.5, 1.0]})
+    w._pose_dirty = True
+    w._render()
+    check("where it last was on this map, when known", np.allclose(v._robot_xy, (2.0, 6.5)), str(v._robot_xy))
+
+    def tf(parent, child, x, y):
+        return {"transforms": [{"header": {"frame_id": parent, "stamp": {"sec": 0, "nanosec": 0}},
+                                "child_frame_id": child,
+                                "transform": {"translation": {"x": x, "y": y, "z": 0.0},
+                                              "rotation": {"x": 0, "y": 0, "z": 0, "w": 1}}}]}
+    w.tf.ingest(tf("odom", "base_link", 0.0, 0.0))
+    w.tf.ingest(tf("map", "odom", 7.0, 3.0))
+    w._pose_dirty = True
+    w._render()
+    check("localized: where it really is, drawn normally", np.allclose(v._robot_xy, (7.0, 3.0)) and v.localized
+          and not v.unloc_text.isVisible(), str(v._robot_xy))
+    w.close()
+
+
 def main() -> int:
     test_builtin()
     test_workspace_urdf()
@@ -496,6 +537,7 @@ def main() -> int:
     test_top_view()
     test_views()
     test_trajectory()
+    test_unlocalized()
     test_connection_page()
     test_packs()
     print(f"\n--- {PASS} passed, {FAIL} failed ---", flush=True)

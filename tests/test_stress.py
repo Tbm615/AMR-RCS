@@ -138,6 +138,15 @@ def main() -> int:
     check("big map drawn", w.p_map.view.map_img.image is not None
           and w.p_map.view.map_img.image.shape == (1000, 1000))
     check("scan drawn (4995-point scans)", len(w.p_map.view.scan_scatter.getData()[0]) > 4000)
+    check("3D map recorded meanwhile, its page never opened (Record on every page)",
+          w.p_3d.keep_bg.isChecked() and w.ros._streams_on.get("map3d") and len(w.ros.cloud_map) > 1000,
+          f"({len(w.ros.cloud_map)} points, streams={w.ros._streams_on})")
+    w.p_3d.keep_bg.setChecked(False)
+    run_for(0.5)
+    check("unticked: no camera stream while the page is closed", not w.ros._streams_on.get("map3d"))
+    from rcs.core.profile import load_settings
+    check("the choice is remembered", load_settings().get("map3d_every_page") is False)
+    w.p_3d.keep_bg.setChecked(True)
 
     print("\n[3D map while the robot turns]")
     w.btns["3d"].click()

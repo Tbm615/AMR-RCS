@@ -63,7 +63,8 @@ else
     [ -f "$MAP_YAML" ] || { echo "no map $MAP"; exit 1; }
     python3 "$HERE/make_world.py" "$MAP_YAML" "$SIM_DIR/$MAP.world"
     if [ -z "$X" ]; then
-        if [ "$MAP" = map23_04 ]; then X=3.55; Y=-5.10; YAW=-1.64; else X=0.0; Y=0.0; YAW=0.0; fi
+        # a free place near the middle of the map, not (0, 0) (often inside a wall)
+        if [ "$MAP" = map23_04 ]; then X=3.55; Y=-5.10; YAW=-1.64; else read -r X Y YAW < <(python3 "$HERE/free_spot.py" "$MAP_YAML"); fi
     fi
 fi
 python3 "$HERE/make_urdf.py" "$AMR_WS/install/bringup/share/bringup/urdf/hinson_robot.urdf.xacro" "$SIM_DIR/hinson_gazebo.urdf"

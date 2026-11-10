@@ -53,6 +53,7 @@ LAUNCHER_CMD = "/rcs/launcher/cmd"
 LAUNCHER_STATE = "/rcs/launcher/state"
 LAUNCHER_PREVIEW = "/rcs/launcher/preview"
 LAUNCHER_MAP_DATA = "/rcs/launcher/map_data"
+LAUNCHER_ZONES = "/rcs/launcher/zones"
 BATTERY = "/rcs/battery"
 BATTERY_CMD = "/rcs/battery/cmd"        # app -> robot: battery log requests
 BATTERY_LOG = "/rcs/battery/log"        # robot -> app: the answers
@@ -207,6 +208,7 @@ class RosClient(QObject):
     launcher_state = Signal(object)      # dict from the robot's rcs_launcher.py
     map_preview = Signal(object)         # dict: answer to the launcher's map_preview op
     map_data = Signal(object)            # dict: answer to the launcher's map_get / map_put
+    zones = Signal(object)               # dict: answer to the launcher's zones_get / zones_put
     battery = Signal(object)             # dict from the robot's rcs_battery.py
     battery_log = Signal(object)         # dict: answer to a battery log request
     estop_state = Signal(object)         # dict from the robot's rcs_safety.py
@@ -496,6 +498,7 @@ class RosClient(QObject):
             self._subscribe(LAUNCHER_STATE, "std_msgs/msg/String", self._on_launcher_state)
             self._subscribe(LAUNCHER_PREVIEW, "std_msgs/msg/String", self._on_map_preview)
             self._subscribe(LAUNCHER_MAP_DATA, "std_msgs/msg/String", self._on_map_data)
+            self._subscribe(LAUNCHER_ZONES, "std_msgs/msg/String", lambda m: self._on_json(m, "zones"))
             self._subscribe(BATTERY, "std_msgs/msg/String", self._on_battery)
             self._subscribe(BATTERY_LOG, "std_msgs/msg/String",
                             lambda m: self._on_json(m, "battery_log"))

@@ -45,6 +45,9 @@ WebSocket.
   robot footprint, planned path, global/local costmaps. Press and drag an
   arrow (like RViz's 2D Goal Pose) to send a goal with its heading, set the
   initial pose, or add waypoints.
+- **Keepout and speed zones:** draw them on the map; the robot keeps them with
+  the map and Nav2 obeys them (costmap filters): no path into a keepout zone,
+  at most the set % in a slow zone. Saved changes apply at once.
 - **Navigation:** live Nav2 state (pending, navigating, reached, canceled,
   aborted, no response), distance and time remaining, cancel.
 - **Missions:** ordered waypoints (checkpoints) with tolerance and dwell,

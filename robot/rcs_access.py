@@ -293,7 +293,8 @@ class Rules:
                               "/rosapi/topics_for_type", "/rosapi/service_type", "/rosapi/get_time",
                               "/rosapi/topics_and_raw_types", "/map_server/map"}
         self.launcher = {"start": "operator", "stop": "operator", "save_map": "operator",
-                         "map_preview": "viewer", "map_get": "viewer", "map_put": "operator"}
+                         "map_preview": "viewer", "map_get": "viewer", "map_put": "operator",
+                         "zones_get": "viewer", "zones_put": "operator"}
         self.battery = {"log_list": "viewer", "log_get": "viewer", "log_delete": "admin"}
 
     def need(self, msg: dict) -> Tuple[str, str]:
@@ -346,6 +347,8 @@ class Rules:
                     "stop": f"stopped {cmd.get('stack')}", "save_map": f"saved map {cmd.get('name')}",
                     "map_put": f"sent map {cmd.get('name')} to the robot",
                     "map_get": f"copied map {cmd.get('name')} from the robot",
+                    "zones_put": f"changed the zones of map {cmd.get('name')} "
+                                 f"({len(cmd.get('zones') or []) if isinstance(cmd.get('zones'), list) else '?'})",
                     "log_delete": f"deleted battery log {cmd.get('name')}"}.get(op, "")
             return role, what
         return "admin", f"published on {topic}"

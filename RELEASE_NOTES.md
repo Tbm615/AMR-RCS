@@ -10,6 +10,60 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/Tbm615/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### v0.6.0-beta.2
+
+A beta, tested on this PC only (mock robots, real Nav2 with the real robot
+launcher in simulation), not on the robot yet. **Update the robot side too**
+(`robot/install_robot.sh`): this app asks for it.
+
+**Keepout and speed zones**
+- Draw them on the 2D Map page (**+ Keepout**, **+ Slow** with its %), on the
+  map Nav2 runs on, and **Save to robot**. The robot keeps them next to the
+  map (`<map>.zones.json`), so every PC sees the same ones.
+- Nav2 obeys them through its costmap filters: a keepout zone is lethal in
+  both costmaps (no path into it); in a slow zone Nav2 drives at most the set
+  % of its top speed. Saved while Nav2 runs, they apply at once.
+- The app refuses a goal or a saved place inside a keepout zone, and warns
+  when a mission waypoint is in one. The Teleop page says when the robot is
+  in or near a zone; manual driving is not limited by zones.
+- Changing zones needs the operator role; each change is in the audit log.
+- The robot's own Nav2 parameter file is not changed: the launcher starts
+  Nav2 with a copy that has the filters.
+
+**3D Map**
+- Records on every page by default (**Record on every page**, remembered):
+  the 3D map keeps growing while you use the other pages. Untick it to spare
+  Wi-Fi (about 1 MB/s); it then records only while the page is open.
+
+**Fixes**
+- **Robot side:** Nav2 on a saved map no longer gets an initial pose of
+  (0, 0) a few seconds after it starts. That pose came from
+  `robot_navigation.launch.py` and could overwrite the pose just set in the
+  app, leaving the robot lost on the map. Set the pose (or **Use last
+  position**) after starting Nav2; the Status page says until then.
+- **Robot side:** Nav2 on a saved map counts as *running* once its map
+  server and AMCL (and the zone filters) say they are active; its navigation
+  half then waits for the robot's pose. Now and then a bring-up hangs on a
+  lost DDS answer (seen with Fast DDS in simulation: no map, AMCL never
+  active, while the launcher said *running*; the robot runs Cyclone DDS). The
+  launcher restarts such a Nav2 by itself (at once when a lifecycle manager
+  gives up; after 60 s when it is not up; 45 s after the pose when navigation
+  is still not active), up to twice, then shows it failed with the reason.
+  Stopping a program now ends its whole process group, so nothing it started
+  is left running.
+- Before the robot is localized, the maps no longer draw it in the map's
+  corner at (0, 0), often inside a wall. It is drawn faded, where it last was
+  on this map or at a free place in the middle, with *Not on the map yet:
+  set the initial pose*.
+- The 2D Map side bar scrolls when the window is short.
+- **Simulation (Gazebo):** on a map without a known start, the robot starts at
+  a free place near the middle of the map instead of (0, 0).
+- **Simulation (Gazebo):** the tyres touch the floor on a 1 cm strip at
+  ±0.195 m. On their full 4 cm width the physics engine sometimes put the
+  contact on the inner rims, and odometry turned 10 % short. Driving under
+  Nav2 after a lost connection, which failed now and then, passes now that
+  no (0, 0) pose overwrites the robot's.
+
 ### v0.6.0-beta.1
 
 A beta: tested on this PC only (mock robots, the robot's own E-STOP and launcher

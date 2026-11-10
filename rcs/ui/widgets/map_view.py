@@ -20,6 +20,7 @@ from PySide6.QtWidgets import QGraphicsPathItem, QGraphicsPolygonItem
 
 import pyqtgraph as pg
 
+from ...core import zones as zn
 from ...core.ros_client import cost_rgba, grid_from_msg, scan_points
 from .robot_shape import RobotShape
 
@@ -113,6 +114,7 @@ class MapView(pg.PlotWidget):
     goal_requested = Signal(float, float, float)   # x, y, yaw (map frame)
     pose_requested = Signal(float, float, float)   # x, y, yaw — set initial pose
     waypoint_requested = Signal(float, float, float)   # x, y, yaw — waypoint with heading
+    zone_drawn = Signal(object)                        # [[x, y], ...]: a zone's corners, "zone" mode
 
     def __init__(self, parent=None):
         super().__init__(parent, background="#0f1115")
@@ -176,6 +178,13 @@ class MapView(pg.PlotWidget):
         self.robot_arrow = pg.PlotDataItem(pen=pg.mkPen("#5a9df6", width=2))
         self.robot_arrow.setZValue(21)
         self.addItem(self.robot_arrow)
+        # before the robot is localized: drawn faded where it probably is, with this
+        self.unloc_text = pg.TextItem("Not on the map yet: set the initial pose", color="#ffb547",
+                                      anchor=(0.5, 1.8), fill=pg.mkBrush(15, 17, 21, 210))
+        self.unloc_text.setZValue(22)
+        self.unloc_text.setVisible(False)
+        self.addItem(self.unloc_text)
+        self.localized = True
 
         # current Nav2 goal (green) and the arrow being dragged (amber / violet)
         self.goal_arrow = _Arrow("#39d98a", 15)
@@ -195,6 +204,16 @@ class MapView(pg.PlotWidget):
         self.addItem(self.ruler_text)
         self._ruler_a: Optional[tuple] = None   # first point while dragging
         self.ruler_m: Optional[float] = None    # last measured distance
+
+        # keepout and speed zones of the map, and the one being drawn ("zone" mode)
+        self._zone_items: list = []
+        self._zones_on = True
+        self.zone_kind = "keepout"              # what the next drawn zone is (its colour)
+        self._zone_pts: list = []
+        self.zone_draft = pg.PlotDataItem(pen=pg.mkPen("#ff5d5d", width=2, style=Qt.DashLine),
+                                          symbol="o", symbolSize=7, symbolBrush="#ff5d5d", symbolPen=None)
+        self.zone_draft.setZValue(27)
+        self.addItem(self.zone_draft)
 
         self._map_origin = (0.0, 0.0)
         self._map_res = 0.05
@@ -250,6 +269,90 @@ class MapView(pg.PlotWidget):
         self._click_mode = mode
         self.cancel_aim()
         self.clear_ruler()
+        self.cancel_zone()
+
+    # ---- zones ----
+
+    ZONE_COLORS = {"keepout": (255, 93, 93), "slow": (255, 181, 71)}
+
+    def set_zones(self, zones: list, selected: str = "") -> None:
+        """Draw the map's zones (keepout red, slow amber); the selected one bolder."""
+        vb = self.getPlotItem().vb
+        for poly, text in self._zone_items:
+            vb.removeItem(poly)
+            vb.removeItem(text)
+        self._zone_items = []
+        for z in zones:
+            r, g, b = self.ZONE_COLORS.get(z["kind"], (200, 200, 200))
+            sel = z.get("id") == selected
+            poly = QGraphicsPolygonItem(QPolygonF([QPointF(x, y) for x, y in z["points"]]))
+            pen = QPen(QColor(r, g, b, 255 if sel else 210))
+            pen.setCosmetic(True)
+            pen.setWidthF(3.0 if sel else 1.6)
+            if z["kind"] == "keepout":
+                pen.setStyle(Qt.SolidLine)
+            else:
+                pen.setStyle(Qt.DashLine)
+            poly.setPen(pen)
+            poly.setBrush(QBrush(QColor(r, g, b, 95 if sel else 60)))
+            poly.setZValue(7)
+            label = z["name"] if z["kind"] == "keepout" else f"{z['name']} {z['speed']} %"
+            text = pg.TextItem(label, color=(r, g, b), anchor=(0.5, 0.5))
+            text.setPos(*zn.centroid(z["points"]))
+            text.setZValue(7.5)
+            for it in (poly, text):
+                it.setVisible(self._zones_on)
+                vb.addItem(it, ignoreBounds=True)
+            self._zone_items.append((poly, text))
+
+    def show_zones(self, on: bool) -> None:
+        self._zones_on = on
+        for poly, text in self._zone_items:
+            poly.setVisible(on)
+            text.setVisible(on)
+
+    def zone_count(self) -> int:
+        return len(self._zone_items)
+
+    def _draw_zone_draft(self, mouse: Optional[tuple] = None) -> None:
+        r, g, b = self.ZONE_COLORS.get(self.zone_kind, (255, 93, 93))
+        self.zone_draft.setPen(pg.mkPen((r, g, b), width=2, style=Qt.DashLine))
+        self.zone_draft.setSymbolBrush((r, g, b))
+        pts = list(self._zone_pts) + ([mouse] if mouse and self._zone_pts else [])
+        if len(self._zone_pts) >= 2 and mouse:
+            pts.append(self._zone_pts[0])          # show it closed
+        if not pts:
+            self.zone_draft.setData([], [])
+            return
+        self.zone_draft.setData([p[0] for p in pts], [p[1] for p in pts])
+
+    def zone_corners(self) -> list:
+        return [list(p) for p in self._zone_pts]
+
+    def add_zone_corner(self, x: float, y: float) -> None:
+        self._zone_pts.append((x, y))
+        self._draw_zone_draft()
+
+    def finish_zone(self) -> bool:
+        """Close the zone being drawn: zone_drawn, if it has an area."""
+        pts = [list(p) for p in self._zone_pts]
+        if len(pts) < 3 or zn.area(pts) < 0.01:
+            return False
+        self.cancel_zone()
+        self.zone_drawn.emit(pts)
+        return True
+
+    def cancel_zone(self) -> None:
+        self._zone_pts = []
+        if hasattr(self, "zone_draft"):
+            self.zone_draft.setData([], [])
+
+    def _near_first_corner(self, ev) -> bool:
+        if len(self._zone_pts) < 3:
+            return False
+        pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+        first = self.mapFromScene(self.getPlotItem().vb.mapViewToScene(QPointF(*self._zone_pts[0])))
+        return (QPointF(first) - pos).manhattanLength() < 12
 
     def show_global_costmap(self, on: bool) -> None:
         self.cost_img.setVisible(on)
@@ -309,10 +412,21 @@ class MapView(pg.PlotWidget):
         self.getPlotItem().vb.setRange(rect=self.map_img.mapRectToParent(self.map_img.boundingRect()),
                                        padding=0.02)
 
-    def set_robot_pose(self, x: float, y: float, yaw: float) -> None:
+    def set_robot_pose(self, x: float, y: float, yaw: float, localized: bool = True) -> None:
+        """localized False: the robot is not on the map yet; it is drawn faded
+        at a guess (its last place, or a free spot in the middle of the map)."""
         self._robot_xy = (x, y)
         self._robot_pose = (x, y, yaw)
         self.robot_shape.set_pose(x, y, yaw)
+        if localized != self.localized:
+            self.localized = localized
+            for it in self.robot_shape.items.values():
+                it.setOpacity(1.0 if localized else 0.35)
+            self.robot_arrow.setVisible(localized)
+            self.robot_body.setOpacity(1.0 if localized else 0.5)
+        self.unloc_text.setVisible(not localized)
+        if not localized:
+            self.unloc_text.setPos(x, y)
         hl, hw = self._robot_half_l, self._robot_half_w
         corners = np.array([
             [hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw], [hl, hw]
@@ -490,6 +604,19 @@ class MapView(pg.PlotWidget):
             self.waypoint_requested.emit(x, y, yaw)
 
     def mousePressEvent(self, ev) -> None:
+        if self._click_mode == "zone" and self._in_plot(ev):
+            if ev.button() == Qt.LeftButton:
+                if self._near_first_corner(ev):
+                    self.finish_zone()
+                else:
+                    self.add_zone_corner(*self._view_xy(ev))
+                ev.accept()
+                return
+            if ev.button() == Qt.RightButton and self._zone_pts:    # undo the last corner
+                self._zone_pts.pop()
+                self._draw_zone_draft(self._view_xy(ev))
+                ev.accept()
+                return
         if ev.button() == Qt.RightButton and self._anchor is not None:
             self.cancel_aim()
             ev.accept()
@@ -519,8 +646,24 @@ class MapView(pg.PlotWidget):
         self.aim_arrow.setVisible(False)      # shown once the drag has a direction
         ev.accept()
 
+    def mouseDoubleClickEvent(self, ev) -> None:
+        if self._click_mode == "zone" and ev.button() == Qt.LeftButton and self._in_plot(ev):
+            # the double-click's first press has usually added this corner already
+            pos = ev.position() if hasattr(ev, "position") else ev.localPos()
+            last = None
+            if self._zone_pts:
+                last = self.mapFromScene(self.getPlotItem().vb.mapViewToScene(QPointF(*self._zone_pts[-1])))
+            if last is None or (QPointF(last) - pos).manhattanLength() > 6:
+                self.add_zone_corner(*self._view_xy(ev))
+            self.finish_zone()
+            ev.accept()
+            return
+        super().mouseDoubleClickEvent(ev)
+
     def mouseMoveEvent(self, ev) -> None:
         self._show_coord(ev)
+        if self._click_mode == "zone" and self._zone_pts and self._pan_last is None:
+            self._draw_zone_draft(self._view_xy(ev))
         if self._ruler_a is not None:
             self._ruler_to(*self._view_xy(ev))
             ev.accept()
@@ -563,6 +706,20 @@ class MapView(pg.PlotWidget):
         ev.accept()
 
     def keyPressEvent(self, ev) -> None:
+        if self._click_mode == "zone" and self._zone_pts:
+            if ev.key() == Qt.Key_Escape:
+                self.cancel_zone()
+                ev.accept()
+                return
+            if ev.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self.finish_zone()
+                ev.accept()
+                return
+            if ev.key() == Qt.Key_Backspace:
+                self._zone_pts.pop()
+                self._draw_zone_draft()
+                ev.accept()
+                return
         if ev.key() == Qt.Key_Escape and (self._anchor is not None or self.ruler_m is not None):
             self.cancel_aim()
             self.clear_ruler()

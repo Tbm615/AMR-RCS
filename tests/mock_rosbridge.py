@@ -51,6 +51,7 @@ import map_preview                                               # noqa: E402
 from map_exchange import MapExchange                             # noqa: E402
 import battery_log                                               # noqa: E402
 import estop_gate                                                # noqa: E402
+import zone_masks                                                # noqa: E402
 
 
 HEAVY = False
@@ -105,6 +106,8 @@ class FakeLauncher:
         self.nav_map = ""           # map Nav2 runs on, refused as a target
         self.drop_next = 0          # answers to lose on the way back
         self.exchange = MapExchange(self._map_paths, self.map_dir, lambda n: n == self.nav_map)
+        self.zones: dict = {}       # map name -> zones, as the robot keeps them
+        self.zone_cmds: list = []
 
     def _map_paths(self) -> dict:
         return {m: os.path.join(self.map_dir, m + ".yaml") for m in self.maps}
@@ -119,6 +122,27 @@ class FakeLauncher:
             self.preview_asked.append(cmd.get("name"))
             if not self.old:
                 self.preview_out.append(self._preview(cmd.get("name", "")))
+            return
+        if op in ("zones_get", "zones_put"):
+            if self.old:
+                return
+            self.zone_cmds.append(cmd)
+            name = cmd.get("name", "")
+            ans = {"id": cmd.get("id", ""), "name": name, "ok": True, "msg": "", "zones": [], "applied": False}
+            try:
+                if name not in self.maps:
+                    raise ValueError(f"map {name!r} not found on the robot")
+                if op == "zones_put":
+                    self.zones[name] = zone_masks.check_zones(cmd.get("zones"))
+                    nav = self.stacks["nav"]
+                    ans["applied"] = nav["state"] == "running" and nav["args"].get("map") == name
+                    ans["msg"] = f"{len(self.zones[name])} zone(s) saved on the robot" + (
+                        ", in use now" if ans["applied"] else "")
+                ans["zones"] = self.zones.get(name, [])
+            except ValueError as e:
+                ans.update(ok=False, msg=str(e))
+            self.preview_out.append({"op": "publish", "topic": "/rcs/launcher/zones",
+                                     "msg": {"data": json.dumps(ans)}})
             return
         if op in ("map_get", "map_put"):
             if self.old:
@@ -166,7 +190,7 @@ class FakeLauncher:
               "maps": self.maps, "busy": "", "result": self.result}
         if not self.old:
             st["map_mtimes"] = {m: 1000.0 for m in self.maps}
-            st["caps"] = ["map_transfer"]
+            st["caps"] = ["map_transfer", "zones"]
             st["camera"] = self.camera
         return {"op": "publish", "topic": "/rcs/launcher/state", "msg": {"data": json.dumps(st)}}
 

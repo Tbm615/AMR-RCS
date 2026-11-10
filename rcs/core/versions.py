@@ -15,7 +15,7 @@ from .. import __version__
 RELEASES = "https://api.github.com/repos/Tbm615/AMR-RCS/releases?per_page=15"
 PAGE = "https://github.com/Tbm615/AMR-RCS/releases"
 # the robot side this app needs at least: older ones lack what it uses
-ROBOT_SIDE_MIN = "0.6.0b1"
+ROBOT_SIDE_MIN = "0.6.0b2"
 
 
 def parse(v: str) -> Tuple[int, int, int, int, int]:

@@ -449,8 +449,47 @@ cancels a goal you are still aiming.
 its heading, to the mission currently open on the **Missions** page.
 
 **Overlays** turn on or off the lidar points, the planned path, the
-waypoints, and the global and local costmaps (shown in red/blue over the
-map).
+waypoints, the zones, and the global and local costmaps (shown in red/blue
+over the map).
+
+**Nav2 starts without an initial pose.** When the app starts Nav2 on a saved
+map (Robot programs page), set the robot's position as above or press **Use
+last position**; the Status page says *not on the map yet* until you do.
+(Earlier versions let the robot's launch file set (0, 0) a few seconds after
+the start, which could overwrite the pose you had just set.)
+
+### Keepout and speed zones
+
+![Keepout and speed zones on the 2D Map](screenshots/zones.png)
+
+Zones belong to a saved map and are kept on the robot, next to the map. Every
+PC that connects sees the same ones. They are for the map Nav2 runs on, so
+start Nav2 on a saved map first.
+
+- **Keepout** (red): Nav2 never plans a path into it, and the app refuses a
+  goal or a saved place inside one. Use it for stairs, a loading bay, a
+  fragile area.
+- **Slow** (amber, dashed): Nav2 drives at most the percentage you set (10 to
+  90 % of its usual top speed) while the robot is inside. Where two slow zones
+  overlap, the lower one counts.
+
+To draw one, press **+ Keepout** or **+ Slow** (set the % next to it first).
+Then click the corners on the map. **Double-click**, **Enter** or a click on
+the first corner closes the zone. **Right-click** or **Backspace** takes the
+last corner back, and **Esc** drops the zone. Select a zone in the list to
+see it highlighted, change a slow zone's %, **Rename** (or double-click it)
+or **Delete** it.
+
+Changes stay on this PC until you press **Save to robot**. If Nav2 is running
+on that map, it uses them at once, without a restart (*in use by Nav2*).
+**Undo changes** goes back to what the robot has. Viewers can see zones but
+not change them, and each change is in the robot's audit log.
+
+Zones stop Nav2 only: you can still drive anywhere by hand, for example to
+get the robot out of a keepout zone. While you drive, the **Teleop** page
+says when the robot is inside or near a zone. A mission waypoint inside a
+keepout zone is not refused, but the mission stops there because Nav2
+cannot reach it; the app warns when you add one.
 
 ---
 
@@ -576,10 +615,10 @@ is built in the app while you drive (Teleop or goals):
   map stays straight while the robot turns. Everything is merged into a grid
   of small cubes (the **Voxel** size, 3 cm by default): one colored point per
   cube.
-- **● Record 3D map** adds to the map while this page is open. Tick **Keep
-  recording on other pages** to keep building it while you use the other
-  pages (it then uses about 1 MB/s of Wi-Fi all the time). The map is kept
-  when you leave the page, until you click **Clear** or close the app.
+- **● Record 3D map** adds to the map. With **Record on every page** (on by
+  default, remembered) it keeps growing whatever page is open: it uses about
+  1 MB/s of Wi-Fi all the time. Untick it to record only while this page is
+  open. The map is kept until you click **Clear** or close the app.
 - **Source:** *Camera depth + color* (default, light) uses
   `/camera/depth/image_raw/compressedDepth` + the color image + the depth
   `camera_info`. *PointCloud2 topic* uses the topic set on the Connection

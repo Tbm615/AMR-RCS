@@ -375,6 +375,8 @@ def main() -> int:
     w._show("cam")
     frames.clear()
     check("camera frames arrive", wait_until(lambda: len(frames) >= 10, 15), str(len(frames)))
+    check("3D map recorded while the other pages were open (Record on every page)",
+          len(w.ros.cloud_map) > 1000, f"{len(w.ros.cloud_map)} points")
     w._show("3d")
     w.ros.cloud_map.clear()
     w.p_3d.rec_btn.setChecked(True)

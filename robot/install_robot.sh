@@ -27,7 +27,8 @@ say "RCS robot side v$VERSION -> $DEST (workspace $RCS_WS)"
 
 # what the launcher and the app need from apt
 missing=()
-for pkg in ros-humble-rosbridge-suite ros-humble-compressed-image-transport; do
+for pkg in ros-humble-rosbridge-suite ros-humble-compressed-image-transport ros-humble-nav2-map-server \
+           ros-humble-nav2-lifecycle-manager python3-yaml; do
     dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
 done
 if [ ${#missing[@]} -gt 0 ]; then

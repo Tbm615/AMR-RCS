@@ -230,6 +230,36 @@ TEXTS = {
     " No sign-in on this robot (its robot side has no gateway).": " Robot này không cần đăng nhập (phía robot chưa có cổng an ninh).",
     " Robot launcher online": " Trình khởi chạy robot đang chạy", "certificate not known yet": "chưa biết chứng chỉ",
     "What this page does (Shift+F1)": "Hướng dẫn trang này (Shift+F1)", "no picture": "không có hình",
+    # keepout and speed zones
+    "Keepout and speed zones": "Vùng cấm và vùng giảm tốc", "+ Keepout": "+ Vùng cấm", "+ Slow": "+ Vùng chậm",
+    "Save to robot": "Lưu lên robot", "Slow zone speed:": "Tốc độ vùng chậm:",
+    "Back to the zones the robot has": "Trở về các vùng đang có trên robot", "Draw zone": "Vẽ vùng",
+    "Zones": "Vùng", "Saving…": "Đang lưu…", "Rename zone": "Đổi tên vùng", "Name:": "Tên:",
+    "keepout": "cấm", "slow": "chậm", "Keepout": "Vùng cấm", "Slow": "Vùng chậm",
+    "Draw an area Nav2 must never drive into: click its corners on the map, double-click (or click the first "
+    "corner) to close it": "Vẽ vùng Nav2 không bao giờ được đi vào: bấm các góc trên bản đồ, bấm đúp (hoặc bấm "
+    "lại góc đầu tiên) để khép vùng",
+    "Draw an area where Nav2 drives at most the % next to it": "Vẽ vùng mà Nav2 chỉ chạy tối đa % ghi bên cạnh",
+    "Most speed in a slow zone, in percent of the usual top speed":
+        "Tốc độ tối đa trong vùng chậm, tính theo % tốc độ tối đa thông thường",
+    "Connect to the robot to see the zones of its maps.": "Kết nối robot để xem các vùng trên bản đồ của nó.",
+    "The robot side is too old for zones: update it (robot/README.md).":
+        "Phần mềm trên robot quá cũ, chưa hỗ trợ vùng: hãy cập nhật (robot/README.md).",
+    "Start Nav2 on a saved map (Robot programs page): zones belong to a map.":
+        "Hãy chạy Nav2 trên một bản đồ đã lưu (trang Chương trình robot): vùng gắn với bản đồ.",
+    "Changes not saved on the robot yet.": "Thay đổi chưa được lưu lên robot.",
+    "Signed in as viewer: you can see the zones, not change them.":
+        "Đăng nhập với quyền xem: bạn xem được các vùng nhưng không sửa được.",
+    "Click the zone's corners; double-click, Enter or a click on the first corner closes it. Right-click or "
+    "Backspace takes the last corner back, Esc drops it.": "Bấm các góc của vùng; bấm đúp, Enter hoặc bấm lại góc "
+    "đầu tiên để khép vùng. Chuột phải hoặc Backspace bỏ góc vừa đặt, Esc huỷ vùng.",
+    "Drive the robot out by hand.": "Hãy lái robot ra bằng tay.",
+    "Manual driving is not limited by zones.": "Lái tay không bị giới hạn bởi vùng.",
+    "Record on every page": "Ghi ở mọi trang",
+    "Not on the map yet: set the initial pose": "Robot chưa có vị trí trên bản đồ: hãy đặt vị trí ban đầu",
+    "On: the 3D map keeps growing whatever page is open (the camera's depth and color, about 1 MB/s of Wi-Fi "
+    "all the time). Off: only while this page is open.": "Bật: bản đồ 3D tiếp tục được dựng dù đang mở trang nào "
+    "(độ sâu và màu của camera, khoảng 1 MB/s Wi-Fi liên tục). Tắt: chỉ khi trang này đang mở.",
 }
 
 PATTERNS = [
@@ -259,4 +289,24 @@ PATTERNS = [
     (r"Map: (.+)", r"Bản đồ: \1"),
     (r"(\d+) selected", r"đã chọn \1"),
     (r"Slow(\s+)(\d)", r"Chậm\1\2"), (r"Medium(\s+)(\d)", r"Vừa\1\2"), (r"Full(\s+)(\d)", r"Tối đa\1\2"),
+    # keepout and speed zones
+    (r"Zones of (.+): asking the robot…", r"Vùng của \1: đang hỏi robot…"),
+    (r"Zones of (.+): (\d+) on the robot, in use by Nav2\.", r"Vùng của \1: \2 vùng trên robot, Nav2 đang dùng."),
+    (r"Zones of (.+): (\d+) on the robot \(restart navigation to use them\)\.",
+     r"Vùng của \1: \2 vùng trên robot (khởi động lại điều hướng để dùng)."),
+    (r"Zones of (.+): (\d+) on the robot\.", r"Vùng của \1: \2 vùng trên robot."),
+    (r"(\d+) zone\(s\) saved on the robot, in use now", r"đã lưu \1 vùng trên robot, đang dùng ngay"),
+    (r"(\d+) zone\(s\) saved on the robot", r"đã lưu \1 vùng trên robot"),
+    (r"\((\S+), (\S+)\) is inside the keepout zone (.+): Nav2 will not go there",
+     r"(\1, \2) nằm trong vùng cấm \3: Nav2 sẽ không đi tới đó"),
+    (r"That waypoint is inside the keepout zone (.+): the mission will stop there",
+     r"Điểm này nằm trong vùng cấm \1: nhiệm vụ sẽ dừng ở đó"),
+    (r"Inside the keepout zone (.+): Nav2 cannot drive here\.", r"Đang ở trong vùng cấm \1: Nav2 không thể chạy ở đây."),
+    (r"Keepout zone (.+) ([\d.]+) m away\.", r"Vùng cấm \1 cách \2 m."),
+    (r"In the slow zone (.+): Nav2 drives at most (\d+) % here\.", r"Đang trong vùng chậm \1: Nav2 chạy tối đa \2 % ở đây."),
+    (r"restarted \((\d+)\): it did not come up", r"đã khởi động lại (\1): chưa lên được"),
+    (r"Nav2 did not come up (\d+) times \(its bring-up was aborted\): see the log below",
+     r"Nav2 không lên được \1 lần (quá trình khởi động bị huỷ): xem log bên dưới"),
+    (r"Nav2 did not come up (\d+) times \(not up in (\d+) s\): see the log below",
+     r"Nav2 không lên được \1 lần (sau \2 s chưa sẵn sàng): xem log bên dưới"),
 ]

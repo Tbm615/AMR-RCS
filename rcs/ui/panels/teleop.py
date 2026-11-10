@@ -167,6 +167,10 @@ class TeleopPanel(QWidget):
         self.clear_note.setProperty("muted", True)
         self.clear_note.setWordWrap(True)
         cv.addWidget(self.clear_note)
+        self.zone_note = QLabel("")         # keepout / slow zone at the robot (zones on the 2D Map page)
+        self.zone_note.setWordWrap(True)
+        self.zone_note.hide()
+        cv.addWidget(self.zone_note)
         side.addWidget(cbox)
 
         gbox = QGroupBox("Gamepad on this PC")
@@ -220,6 +224,16 @@ class TeleopPanel(QWidget):
         self.bar_front.set_value(c.front)
         self.bar_rear.set_value(c.rear)
         self.bar_near.set_value(c.nearest)
+
+    def set_zone_note(self, level: str, sentences) -> None:
+        """What the zones say where the robot is (none: hidden)."""
+        from ... import i18n
+        text = " ".join(i18n.tr(t) for t in sentences)       # one by one: each has its own catalog entry
+        if text == self.zone_note.text() and self.zone_note.isVisible() == bool(text):
+            return
+        self.zone_note.setText(text)
+        self.zone_note.setStyleSheet("color:#ffb547;" if level == "warn" else "color:#4fd1ff;")
+        self.zone_note.setVisible(bool(text))
 
     def _check_clearance_age(self) -> None:
         if self._clear_t and time.monotonic() - self._clear_t > STALE_S:

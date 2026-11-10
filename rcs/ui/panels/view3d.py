@@ -316,8 +316,10 @@ class View3DPanel(QWidget):
         self.range.setSuffix(" m")
         self.range.setToolTip("Depth farther than this is too noisy to keep")
         r1.addWidget(self.range)
-        self.keep_bg = QCheckBox("Keep recording on other pages")
-        self.keep_bg.setToolTip("Uses WiFi bandwidth all the time; off = only while this page is open")
+        self.keep_bg = QCheckBox("Record on every page")
+        self.keep_bg.setChecked(True)       # the map keeps growing whatever page is open
+        self.keep_bg.setToolTip("On: the 3D map keeps growing whatever page is open (the camera's depth and "
+                                "color, about 1 MB/s of Wi-Fi all the time). Off: only while this page is open.")
         r1.addWidget(self.keep_bg)
 
         # ---- view

@@ -36,6 +36,7 @@ from ..core import versions
 from .. import i18n
 from ..core import permissions
 from ..core import robot_model
+from ..core import zones as zn
 from ..core.robot_data import RobotState, migrate_legacy, robot_dir
 from ..core.ros_client import RosClient, quat_to_yaw
 from ..core.runs import RunLog
@@ -455,6 +456,9 @@ class MainWindow(QMainWindow):
     def on_escape(self) -> None:
         """Esc: drop what the mouse is doing on a map, else stop the current goal."""
         for v in (self.p_map.view, self.p_nav.view, self.p_mission.view):
+            if v.zone_corners():                # a zone being drawn
+                v.cancel_zone()
+                return
             if v._anchor is not None or v.ruler_m is not None:
                 v.cancel_aim()
                 v.clear_ruler()
@@ -783,7 +787,9 @@ class MainWindow(QMainWindow):
         self.ros.cloud_updated.connect(self.p_3d.on_cloud_stats)
         if hasattr(self.p_3d, "rec_btn"):
             self.p_3d.recording_changed.connect(lambda _on: self._sync_streams())
-            self.p_3d.keep_bg.toggled.connect(lambda _on: self._sync_streams())
+            self.p_3d.keep_bg.setChecked(bool(self.settings.get("map3d_every_page", True)))
+            self.p_3d.keep_bg.toggled.connect(lambda on: (save_settings({"map3d_every_page": on}),
+                                                          self._sync_streams()))
             self.p_3d.range.valueChanged.connect(lambda v: setattr(self.ros, "map3d_range", v))
             self.p_3d.source_changed.connect(
                 lambda src: (self.ros.set_map3d_source(src), self._sync_streams()))
@@ -817,10 +823,10 @@ class MainWindow(QMainWindow):
         self.sidebar_estop.toggled.connect(self._set_estop)
 
         # map / nav / mission → ros
-        self.p_map.goal_requested.connect(self._send_goal)
+        self.p_map.goal_requested.connect(self._send_goal_checked)
         self.p_map.cancel_requested.connect(self.ros.cancel_nav_goal)
         self.p_map.set_initial_pose.connect(self._set_initial_pose)
-        self.p_nav.goal_requested.connect(self._send_goal)
+        self.p_nav.goal_requested.connect(self._send_goal_checked)
         self.p_nav.cancel_requested.connect(self.ros.cancel_nav_goal)
         self.p_mission.goal_requested.connect(self._send_goal)
         self.p_mission.cancel_requested.connect(self.ros.cancel_nav_goal)
@@ -838,8 +844,15 @@ class MainWindow(QMainWindow):
         self.p_map.last_pose_btn.clicked.connect(self._use_last_pose)
         self.p_robot.last_pose_btn.clicked.connect(self._use_last_pose)
         # the 3D Map can set the same things as the 2D Map
-        self.p_3d.goal_requested.connect(self._send_goal)
+        self.p_3d.goal_requested.connect(self._send_goal_checked)
         self.p_3d.pose_requested.connect(self._set_initial_pose)
+        # keepout and speed zones of the map Nav2 runs on
+        zb = self.p_map.zones
+        zb.reload_requested.connect(lambda name: self.ros.send_launcher_cmd("zones_get", name=name))
+        zb.save_requested.connect(self._save_zones)
+        zb.changed.connect(self._draw_zones)
+        self.ros.zones.connect(zb.on_answer)
+        self.p_map.view.waypoint_requested.connect(self._warn_keepout_waypoint)
         self.p_3d.waypoint_requested.connect(self.p_mission.add_waypoint_at)
         self.p_mission._emit_wps()      # the open mission was loaded before these connections
 
@@ -855,6 +868,8 @@ class MainWindow(QMainWindow):
 
     def _connect_now(self, profile: RobotProfile) -> None:
         self._odom_seen = False
+        if self.ros.profile is None or self.ros.profile.id != profile.id:
+            self.p_map.zones.set_map("")        # another robot: its maps have their own zones
         self.profiles.set_active(profile.id)
         self._switch_robot(profile)
         self._bring_layout(profile)
@@ -948,6 +963,7 @@ class MainWindow(QMainWindow):
         self.p_robot.set_can_operate(permissions.can(role, "launch"), why("launch"))
         self.p_mission.set_can_run(permissions.can(role, "goal"), why("goal"))
         self.p_data.set_can_send(permissions.can(role, "send_map"), why("send_map"))
+        self.p_map.zones.set_can_edit(permissions.can(role, "zones"))
         self.p_battery.set_can_delete(permissions.can(role, "delete_log"))
 
     def _on_denied(self, d: dict) -> None:
@@ -1015,6 +1031,7 @@ class MainWindow(QMainWindow):
 
     def _on_ros_disconnected(self) -> None:
         self.sb_conn.setText("● offline"); self.sb_conn.setStyleSheet("color:#ff6a6a;")
+        self.p_map.zones.set_link(False, self.p_map.zones.available)
         if getattr(self, "_linked", False):
             self._linked = False
             self._sensor_ok.clear()
@@ -1229,6 +1246,8 @@ class MainWindow(QMainWindow):
         args = nav.get("args") or {}
         up = nav.get("state") in ("starting", "running") and args.get("mode") == "map"
         self._nav_map = str(args.get("map", "")) if up else ""
+        self.p_map.zones.set_link(self.ros.is_connected(), zn.CAP in (st.get("caps") or []))
+        self.p_map.zones.set_map(self._nav_map)
         self.p_nav.places.set_map(self._nav_map)
         self.p_mission.set_map(self._nav_map)
         self._update_last_pose_buttons()
@@ -1265,8 +1284,57 @@ class MainWindow(QMainWindow):
         self.p_nav.view.set_places(pts)
 
     def _go_to_place(self, p) -> None:
+        if self._keepout_refusal(p.x, p.y):
+            return
         self._log("info", "Navigation", f"going to {p.name}")
         self._send_goal(p.x, p.y, p.yaw)
+
+    # ---- keepout and speed zones ----
+
+    def zones(self) -> list:
+        """The zones on the maps (as edited on the 2D Map page)."""
+        return self.p_map.zones.zones
+
+    def _keepout_refusal(self, x: float, y: float) -> bool:
+        """True (and the operator told) if (x, y) is inside a keepout zone."""
+        z = zn.keepout_at(self.p_map.zones.robot_zones, x, y)
+        if z is None:
+            return False
+        text = f"({x:.2f}, {y:.2f}) is inside the keepout zone {z['name']}: Nav2 will not go there"
+        self.statusBar().showMessage(text, 8000)
+        self._log("warn", "Navigation", text)
+        return True
+
+    def _send_goal_checked(self, x: float, y: float, yaw: float) -> None:
+        if not self._keepout_refusal(x, y):
+            self._send_goal(x, y, yaw)
+
+    def _warn_keepout_waypoint(self, x: float, y: float, _yaw: float) -> None:
+        z = zn.keepout_at(self.p_map.zones.robot_zones, x, y)
+        if z is not None:
+            self.statusBar().showMessage(f"That waypoint is inside the keepout zone {z['name']}: "
+                                         "the mission will stop there", 8000)
+
+    def _save_zones(self, name: str, zones: list) -> None:
+        if not permissions.can(self.ros.role, "zones"):
+            self._on_denied({"local": True, "what": permissions.refusal(self.ros.role, "zones")})
+            return
+        self.ros.send_launcher_cmd("zones_put", name=name, zones=zones)
+        self._log("info", "Robot", f"zones of {name} sent to the robot ({len(zones)})")
+
+    def _show_zone_note(self, pose) -> None:
+        """Teleop page: the zone the robot is in or near (on the map Nav2 runs on)."""
+        zb = self.p_map.zones
+        if self._pose_frame != "map" or not zb.loaded or zb.map_name != self._nav_map:
+            self.p_teleop.set_zone_note("", [])
+            return
+        self.p_teleop.set_zone_note(*zn.note_at(zb.robot_zones, pose[0], pose[1]))
+
+    def _draw_zones(self) -> None:
+        zb = self.p_map.zones
+        self.p_map.view.set_zones(zb.zones, zb.selected_id())
+        for v in (self.p_nav.view, self.p_mission.view):
+            v.set_zones(zb.zones)
 
     _nav_map = ""           # saved map Nav2 runs on; "" = none, or SLAM
 
@@ -1360,12 +1428,17 @@ class MainWindow(QMainWindow):
             self._pose_dirty = False
             self._update_robot_pose()
             pose = (self._robot_x, self._robot_y, self._robot_yaw)
+            guess = None if self._pose_frame == "map" else self._unlocalized_spot()
             for v in views:
-                v.set_robot_pose(*pose)
+                if guess is None:
+                    v.set_robot_pose(*pose)
+                else:                       # a map but no place on it: not the corner at (0, 0)
+                    v.set_robot_pose(*guess, localized=False)
             self.p_mission.update_robot_pose(*pose, draw="mission" in self._visible)
             if self._pose_frame:        # never a made-up (0, 0) in the trajectory
                 self.p_3d.update_robot_pose(*pose, frame=self._pose_frame)
             self.p_nav.places.set_pose(*pose)
+            self._show_zone_note(pose)
             self._track_pose(pose)
             self._track_run_distance(pose)
             self.sb_pose.setText(f"pose: x={pose[0]:+.2f} y={pose[1]:+.2f} yaw={pose[2]:+.2f}")
@@ -1420,6 +1493,32 @@ class MainWindow(QMainWindow):
 
     def _on_map(self, m: dict) -> None:
         self._set_layer("map", m)
+        self._map_msg = m
+        self._map_spot = None               # worked out again for this map when needed
+        self._pose_dirty = True
+
+    _map_msg = None
+    _map_spot = None
+
+    def _unlocalized_spot(self):
+        """Where to draw the robot while it is not on the map: where it last was
+        on this map, else a free place near the middle; None when there is no map."""
+        if self._map_msg is None:
+            return None
+        last = self.last_pose()
+        if last:
+            return tuple(last)
+        if self._map_spot is None:
+            from ..core.free_spot import nearest_free
+            from ..core.ros_client import grid_from_msg
+            m = self._map_msg
+            info = m.get("info", {})
+            g = m["_grid"] if "_grid" in m else grid_from_msg(m)
+            o = info.get("origin", {}).get("position", {})
+            spot = None if g is None else nearest_free(g, float(info.get("resolution", 0.05)),
+                                                       float(o.get("x", 0.0)), float(o.get("y", 0.0)))
+            self._map_spot = (spot[0], spot[1], 0.0) if spot else ()
+        return self._map_spot or None
 
     def _send_goal(self, x: float, y: float, yaw: float) -> None:
         if not self._charger_goal:

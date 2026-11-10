@@ -1,13 +1,14 @@
 """2D map panel wrapping MapView + sidebar controls."""
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QGroupBox, QHBoxLayout, QLabel, QPushButton,
+    QCheckBox, QComboBox, QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea,
     QVBoxLayout, QWidget,
 )
 
 from ..widgets.map_view import MapView
+from ..widgets.zones_box import ZonesBox
 
 
 class Map2DPanel(QWidget):
@@ -35,7 +36,7 @@ class Map2DPanel(QWidget):
         tools = QGroupBox("Tools")
         tv = QVBoxLayout(tools)
         self.mode = QComboBox()
-        self.mode.addItems(["Set goal", "Add waypoint", "Set initial pose", "Measure distance"])
+        self.mode.addItems(["Set goal", "Add waypoint", "Set initial pose", "Measure distance", "Draw zone"])
         self.mode.currentIndexChanged.connect(self._mode_changed)
         tv.addWidget(self.mode)
         self.hint = QLabel()
@@ -69,15 +70,27 @@ class Map2DPanel(QWidget):
         self.ck_lc.toggled.connect(self.view.show_local_costmap)
         self.ck_pl = QCheckBox("Saved places"); self.ck_pl.setChecked(True)
         self.ck_pl.toggled.connect(self.view.show_places)
-        for w in (self.ck_scan, self.ck_path, self.ck_wp, self.ck_pl, self.ck_gc, self.ck_lc):
+        self.ck_zones = QCheckBox("Zones"); self.ck_zones.setChecked(True)
+        self.ck_zones.toggled.connect(self.view.show_zones)
+        for w in (self.ck_scan, self.ck_path, self.ck_wp, self.ck_pl, self.ck_zones, self.ck_gc, self.ck_lc):
             ov.addWidget(w)
         side.addWidget(overlay)
+
+        self.zones = ZonesBox()
+        self.zones.draw_requested.connect(self.draw_zone)
+        self.view.zone_drawn.connect(self._zone_drawn)
+        side.addWidget(self.zones)
 
         side.addStretch(1)
         wrap = QWidget()
         wrap.setLayout(side)
-        wrap.setFixedWidth(270)
-        root.addWidget(wrap)
+        scroll = QScrollArea()          # a short window scrolls the side bar, nothing is cut off
+        scroll.setWidget(wrap)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setFixedWidth(300)
+        root.addWidget(scroll)
 
     _HINTS = {
         0: "Press where the robot should go and drag toward the direction it should face; "
@@ -88,9 +101,22 @@ class Map2DPanel(QWidget):
         2: "Press where the robot really is and drag toward the direction it faces; "
            "release to set the initial pose.",
         3: "Press and drag between two points to measure the distance. Esc clears it.",
+        4: "Click the zone's corners; double-click, Enter or a click on the first corner closes it. "
+           "Right-click or Backspace takes the last corner back, Esc drops it.",
     }
 
     def _mode_changed(self, idx: int) -> None:
-        self.view.set_click_mode({0: "goal", 1: "waypoint", 2: "pose", 3: "measure"}[idx])
+        self.view.set_click_mode({0: "goal", 1: "waypoint", 2: "pose", 3: "measure", 4: "zone"}[idx])
         if hasattr(self, "hint"):
             self.hint.setText(self._HINTS[idx])
+
+    def draw_zone(self, kind: str) -> None:
+        """Draw a keepout or slow zone on this map (the Draw zone tool)."""
+        self.view.zone_kind = kind
+        self.mode.setCurrentIndex(4)
+        self.view.cancel_zone()
+        self.view.setFocus()
+
+    def _zone_drawn(self, points: list) -> None:
+        if self.zones.add_keep.isEnabled():
+            self.zones.add_drawn(self.view.zone_kind, points)

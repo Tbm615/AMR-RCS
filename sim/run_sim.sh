@@ -41,8 +41,14 @@ python3 "$HERE/fake_base.py" --map "$MAP" --x "$X" --y "$Y" --yaw "$YAW" \
 pids+=($!)
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml port:=9090 > "$LOG/rosbridge.log" 2>&1 &
 pids+=($!)
+# the map's keepout and speed zones (<map>.zones.json), as rcs_launcher.py starts Nav2
+mapfile -t Z < <(python3 "$HERE/../robot/zone_masks.py" "$MAP" \
+    "$AMR_WS/install/navigation/share/navigation/config/nav2_smac_mppi.yml" "$LOG/zones")
 ros2 launch navigation robot_navigation.launch.py map:="$MAP" rviz:=false use_cbf:=true \
-    initial_pose_x:="$X" initial_pose_y:="$Y" initial_pose_yaw:="$YAW" > "$LOG/nav.log" 2>&1 &
+    initial_pose_x:="$X" initial_pose_y:="$Y" initial_pose_yaw:="$YAW" params_file:="${Z[0]}" > "$LOG/nav.log" 2>&1 &
+pids+=($!)
+ros2 launch "$HERE/../robot/costmap_filters.launch.py" keepout_mask:="${Z[1]}" speed_mask:="${Z[2]}" \
+    > "$LOG/zones.log" 2>&1 &
 pids+=($!)
 
 echo "sim up (domain $ROS_DOMAIN_ID): rosbridge ws://127.0.0.1:9090, logs in $LOG"

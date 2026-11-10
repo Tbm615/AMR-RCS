@@ -12,6 +12,8 @@ to it through two std_msgs/String topics carrying JSON:
       {"id": "...", "op": "save_map", "name": "office"}
       {"id": "...", "op": "map_preview", "name": "office"}
       {"id": "...", "op": "map_get" | "map_put", ...}     see map_exchange.py
+      {"id": "...", "op": "zones_get", "name": "office"}
+      {"id": "...", "op": "zones_put", "name": "office", "zones": [...]}   see zone_masks.py
 
   /rcs/launcher/state  robot -> app, 1 Hz and on every change
       {"version": 1, "stacks": {"bringup": {...}, "nav": {...}},
@@ -25,9 +27,14 @@ to it through two std_msgs/String topics carrying JSON:
 
   /rcs/launcher/map_data  robot -> app, answers to map_get and map_put
 
+  /rcs/launcher/zones  robot -> app, answers to zones_get and zones_put
+      {"id", "name", "ok", "msg", "zones": [...], "applied": bool (Nav2 uses them now)}
+
 Stacks:
   bringup  drives, lidar, scan filter, camera (bringup.launch.py)
-  nav      mode "map":  robot_navigation.launch.py on a saved map (AMCL)
+  nav      mode "map":  nav_map.launch.py: Nav2 + AMCL + CBF filter on a saved map
+                        (as robot_navigation.launch.py, without its initial pose), with
+                        the map's keepout and speed zones (costmap_filters.launch.py)
            mode "slam": slam_toolbox + Nav2 + CBF filter, builds the map live
 
 Environment: RCS_WS is the colcon workspace (default ~/tbm_test). Saved maps
@@ -50,10 +57,13 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
+from geometry_msgs.msg import PoseWithCovarianceStamped
 
 from camera_check import camera_usb
 from map_exchange import MapExchange
 from map_preview import map_preview
+import zone_masks
 
 WS = Path(os.environ.get("RCS_WS", str(Path.home() / "tbm_test"))).expanduser()
 NAV_SHARE = WS / "install" / "navigation" / "share" / "navigation"
@@ -67,12 +77,28 @@ LOG_MAX_BYTES = 20 * 1024 * 1024
 # command passes it. RCS_ESTOP_GATE=0 starts bringup the old way, unguarded; so
 # does an RCS_BRINGUP_CMD without cmd_vel_topic:=/rcs/cmd_vel_gated (Gazebo sim).
 GATE = os.environ.get("RCS_ESTOP_GATE", "1") != "0"
-ROBOT_SIDE = "0.6.0b1"      # the release of these robot/ files: the app says when it is older than itself
+ROBOT_SIDE = "0.6.0b2"      # the release of these robot/ files: the app says when it is older than itself
 GATED_TOPIC = "/rcs/cmd_vel_gated"
 BRINGUP_CMD = shlex.split(os.environ.get(
     "RCS_BRINGUP_CMD",
     "ros2 launch bringup bringup.launch.py" + (f" cmd_vel_topic:={GATED_TOPIC}" if GATE else "")))
 SIM_TIME = os.environ.get("RCS_USE_SIM_TIME") == "1"
+# Nav2 now and then never finishes its lifecycle bring-up (a lost service
+# answer at startup, seen with FastDDS): after this long it is restarted once.
+NAV_UP_TIMEOUT_S = float(os.environ.get("RCS_NAV_UP_TIMEOUT", "60"))
+# Nav2 is up when its lifecycle managers say so (their topics exist already when
+# a node is only configured, e.g. when its activation hung)
+MANAGERS = ("lifecycle_manager_localization", "lifecycle_manager_navigation", "lifecycle_manager_zones")
+NAV_RESTARTS = 2            # automatic restarts before the stack shows failed
+# On a saved map Nav2's navigation half finishes activating only once AMCL has
+# a pose (its costmaps wait for map -> base_link): it may wait for the
+# operator as long as it likes, but not this long after a pose came.
+NAV_ACTIVE_AFTER_POSE_S = float(os.environ.get("RCS_NAV_ACTIVE_AFTER_POSE", "45"))
+# what Nav2's lifecycle manager says when it gives up: restart at once
+ABORTED = ("Failed to bring up all requested nodes",)
+HERE = Path(__file__).resolve().parent
+# masks and Nav2 parameters with the zone filters, rewritten at every Nav2 start
+ZONES_DIR = Path(os.environ.get("RCS_ZONES_DIR", str(Path.home() / ".ros" / "rcs_zones"))).expanduser()
 # The HINS lidar driver can print this hundreds of times a second.
 DROP_LINES = ("null data",)
 
@@ -94,23 +120,44 @@ def _mtime(path: str) -> float:
         return 0.0
 
 
+def _zone_setup(map_yaml: str):
+    """(Nav2 params file with the zone filters, masks) for a map, or (None, why)."""
+    try:
+        masks = zone_masks.write_masks(map_yaml, zone_masks.read_zones(map_yaml), ZONES_DIR)
+        params = zone_masks.params_with_filters(NAV_SHARE / "config" / "nav2_smac_mppi.yml",
+                                                ZONES_DIR / "nav2_params.yaml")
+        return params, masks
+    except Exception as e:      # no zones is better than no navigation
+        return None, f"zones off: {e}"
+
+
 def _nav_commands(mode: str, map_yaml: str = "") -> list:
+    """The processes of the nav stack. On a saved map: nav_map.launch.py, one
+    launch as robot_navigation.launch.py (map server + AMCL, Nav2, CBF filter)
+    with the map's zones, without its initial pose: that (0, 0, 0) comes a few
+    seconds after the start and can overwrite the pose the operator has just
+    set. The operator sets it (or "Use last position"); the app says so."""
     cfg = NAV_SHARE / "config"
     sim = ["use_sim_time:=true"] if SIM_TIME else []
+    cbf = ["ros2", "run", "navigation", "cbf_safety_filter.py", "--ros-args",
+           "--params-file", str(cfg / "cbf_params.yaml"),
+           "-r", "cmd_vel_raw:=/cmd_vel", "-r", "cmd_vel:=/cmd_vel_safe",
+           "-r", "scan:=/scan_filtered", "-r", "odom:=/odom",
+           *(["-p", "use_sim_time:=true"] if SIM_TIME else [])]
     if mode == "map":
-        return [["ros2", "launch", "navigation", "robot_navigation.launch.py",
-                 f"map:={map_yaml}", "use_cbf:=true", "rviz:=false", *sim]]
-    # SLAM: same Nav2 + CBF chain as robot_navigation.launch.py, slam_toolbox
-    # in place of AMCL and the map server.
+        params, masks = _zone_setup(map_yaml)
+        cmd = ["ros2", "launch", str(HERE / "nav_map.launch.py"), f"map:={map_yaml}",
+               f"params_file:={params or cfg / 'nav2_smac_mppi.yml'}",
+               f"cbf_params_file:={cfg / 'cbf_params.yaml'}", *sim]
+        if params is not None:
+            cmd += [f"keepout_mask:={masks['keepout']}", f"speed_mask:={masks['speed']}"]
+        return [cmd]
+    # SLAM: slam_toolbox in place of AMCL and the map server
     return [
         ["ros2", "launch", "slam", "slamtoolbox.launch.xml", *sim],
         ["ros2", "launch", "nav2_bringup", "navigation_launch.py",
          f"params_file:={cfg / 'nav2_smac_mppi.yml'}", *sim],
-        ["ros2", "run", "navigation", "cbf_safety_filter.py", "--ros-args",
-         "--params-file", str(cfg / "cbf_params.yaml"),
-         "-r", "cmd_vel_raw:=/cmd_vel", "-r", "cmd_vel:=/cmd_vel_safe",
-         "-r", "scan:=/scan_filtered", "-r", "odom:=/odom",
-         *(["-p", "use_sim_time:=true"] if SIM_TIME else [])],
+        cbf,
     ]
 
 
@@ -127,31 +174,54 @@ class Stack:
         self.tail: deque = deque(maxlen=40)
         self._lock = threading.Lock()
         self._log_path = LOG_DIR / f"rcs_{name}.log"
+        self.cmds: list = []
+        self.stagger = 0.0
+        self.retries = 0            # automatic restarts since the operator's start
+        self._gen = 0               # bumped by stop(): a start still staggering gives up
+        self.aborted = False        # a lifecycle manager gave up (from the log)
+        self.starts = 0             # every start, automatic ones too
+        self.started = 0.0
 
     # -- lifecycle --
 
-    def start(self, cmds: list, args: dict) -> None:
+    def start(self, cmds: list, args: dict, stagger: float = 0.0, retry: bool = False) -> None:
+        """Start the processes, stagger seconds apart (the lock is not held
+        while waiting, so the state keeps going out)."""
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         with self._lock:
             self.tail.clear()
-            self.args = args
+            self.args, self.cmds, self.stagger = args, cmds, stagger
+            if not retry:
+                self.retries = 0
+            self.aborted = False
+            self.starts += 1
+            self.started = time.time()
             self.procs = []
+            gen = self._gen
             log = open(self._log_path, "a", buffering=1)
-            log.write(f"\n=== {time.ctime()} start {args}\n")
-            for cmd in cmds:
+            log.write(f"\n=== {time.ctime()} start {args}{' (automatic restart)' if retry else ''}\n")
+            self._set("starting", f"restarted ({self.retries}): it did not come up" if retry else "")
+        for i, cmd in enumerate(cmds):
+            if i and stagger:
+                time.sleep(stagger)
+            with self._lock:
+                if gen != self._gen:            # stopped meanwhile
+                    return
                 p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      stdin=subprocess.DEVNULL, text=True, bufsize=1,
                                      start_new_session=True, errors="replace")
                 self.procs.append(p)
-                threading.Thread(target=self._pump, args=(p, log), daemon=True).start()
-            self._set("starting")
-        _save_pids()
+            threading.Thread(target=self._pump, args=(p, log, self.starts), daemon=True).start()
+            _save_pids()
 
-    def _pump(self, p: subprocess.Popen, log) -> None:
+    def _pump(self, p: subprocess.Popen, log, start: int) -> None:
         written = 0
         for line in p.stdout:
             if any(s in line for s in DROP_LINES):
                 continue
+            # only this start's processes: a stopped one says such things while it dies
+            if start == self.starts and any(s in line for s in ABORTED):
+                self.aborted = True
             self.tail.append(line.rstrip()[:300])
             try:
                 if written > LOG_MAX_BYTES:
@@ -163,6 +233,7 @@ class Stack:
 
     def stop(self) -> None:
         with self._lock:
+            self._gen += 1
             procs = list(self.procs)
             if not procs:
                 self._set("stopped")
@@ -205,20 +276,34 @@ class Stack:
                 "args": self.args, "log": list(self.tail)[-15:]}
 
 
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
 def _signal_groups(procs: list) -> None:
-    """SIGINT (like Ctrl-C, lets ros2 launch shut down cleanly), then escalate."""
+    """SIGINT (like Ctrl-C, lets ros2 launch shut down cleanly), then escalate,
+    to the whole process group: a child left behind by its parent goes too."""
+    groups = [p.pid for p in procs]
     for sig, wait in ((signal.SIGINT, 15.0), (signal.SIGTERM, 5.0), (signal.SIGKILL, 2.0)):
-        alive = [p for p in procs if p.poll() is None]
+        alive = [g for g in groups if _group_alive(g)]
         if not alive:
-            return
-        for p in alive:
+            break
+        for g in alive:
             try:
-                os.killpg(p.pid, sig)
+                os.killpg(g, sig)
             except ProcessLookupError:
                 pass
         end = time.time() + wait
-        while time.time() < end and any(p.poll() is None for p in alive):
+        while time.time() < end and any(_group_alive(g) for g in alive):
+            for p in procs:
+                p.poll()            # reap the parents, so their group can empty
             time.sleep(0.2)
+    for p in procs:
+        p.poll()
 
 
 STACKS = {"bringup": Stack("bringup"), "nav": Stack("nav")}
@@ -266,6 +351,21 @@ class Launcher(Node):
         self.pub = self.create_publisher(String, "/rcs/launcher/state", latched)
         self.preview_pub = self.create_publisher(String, "/rcs/launcher/preview", 5)
         self.map_data_pub = self.create_publisher(String, "/rcs/launcher/map_data", 5)
+        self.zones_pub = self.create_publisher(String, "/rcs/launcher/zones", 5)
+        self._active_cli = {m: self.create_client(Trigger, f"/{m}/is_active") for m in MANAGERS}
+        self._active: dict = {}             # manager -> it said it is active (this start)
+        self._active_fut: dict = {}
+        self._active_key = None             # which start of the nav stack they are about
+        self._pose_t = 0.0                  # last /amcl_pose: AMCL has a pose
+        self.create_subscription(PoseWithCovarianceStamped, "/amcl_pose",
+                                 lambda _m: setattr(self, "_pose_t", time.time()), 10)
+        self._load_map_clients: dict = {}      # made here, not from a worker thread
+        try:
+            from nav2_msgs.srv import LoadMap
+            for server in ("keepout_mask_server", "speed_mask_server"):
+                self._load_map_clients[server] = self.create_client(LoadMap, f"/{server}/load_map")
+        except ImportError:                     # no Nav2 here: zones are kept, never applied live
+            pass
         self.exchange = MapExchange(_maps, SAVED_MAPS, _nav_runs_on)
         self.create_subscription(String, "/rcs/launcher/cmd", self._on_cmd, 10)
         self.result = {"id": "", "ok": True, "msg": ""}
@@ -283,15 +383,94 @@ class Launcher(Node):
         self.publish_state()
 
     def _update_ready(self) -> None:
-        """starting -> running once the stack's key topics have publishers."""
+        """starting -> running once the stack's key topics have publishers and,
+        for Nav2, its lifecycle managers say it is active. Nav2 that does not
+        come up is restarted (_nav_not_up)."""
         b, n = STACKS["bringup"], STACKS["nav"]
         if b.state == "starting" and self.count_publishers("/odom") and \
                 self.count_publishers("/scan_filtered"):
             b._set("running")
-        if n.state == "starting" and \
+        if n.state not in ("starting", "running") or not n.procs or len(n.procs) != len(n.cmds):
+            return
+        self._ask_active(n)
+        nav_ok = self._active.get("lifecycle_manager_navigation", False)
+        others = all(self._active.get(m) for m in self._managers(n) if m != "lifecycle_manager_navigation")
+        posed = self._waits_for_pose(n)
+        if n.state == "starting" and others and (nav_ok or posed) and \
                 self.count_publishers("/navigate_to_pose/_action/status") and \
                 self.count_publishers("/map"):
             n._set("running")
+        now = time.time()
+        why = ""
+        if n.aborted:
+            why = "its bring-up was aborted"
+        elif n.state == "starting" and now - n.since > NAV_UP_TIMEOUT_S:
+            why = f"not up in {NAV_UP_TIMEOUT_S:.0f} s"
+        elif n.state == "running" and posed and not nav_ok and self._pose_t > n.started and \
+                now - self._pose_t_first(n) > NAV_ACTIVE_AFTER_POSE_S:
+            why = f"not active {NAV_ACTIVE_AFTER_POSE_S:.0f} s after the robot got its pose"
+        if why:
+            with self._lock:
+                if self.busy:
+                    return
+                self.busy = "restart nav"
+            threading.Thread(target=self._nav_not_up, args=(why,), daemon=True).start()
+
+    def _waits_for_pose(self, n: "Stack") -> bool:
+        """Nav2 on a saved map: its navigation half waits for AMCL's pose."""
+        flat = " ".join(" ".join(c) for c in n.cmds)
+        return "nav_map.launch.py" in flat or "localization_launch.py" in flat
+
+    def _pose_t_first(self, n: "Stack") -> float:
+        """When AMCL first had a pose in this start of the nav stack."""
+        if getattr(self, "_first_pose", (None, 0.0))[0] != n.starts:
+            self._first_pose = (n.starts, 0.0)
+        if not self._first_pose[1] and self._pose_t > n.started:
+            self._first_pose = (n.starts, self._pose_t)
+        return self._first_pose[1] or time.time()
+
+    def _managers(self, n: "Stack") -> tuple:
+        """The lifecycle managers this start of the nav stack has."""
+        flat = " ".join(" ".join(c) for c in n.cmds)
+        out = ["lifecycle_manager_navigation"]
+        if "localization_launch.py" in flat or "nav_map.launch.py" in flat:
+            out.append("lifecycle_manager_localization")
+        if "costmap_filters.launch.py" in flat or "keepout_mask:=" in flat:
+            out.append("lifecycle_manager_zones")
+        return tuple(out)
+
+    def _ask_active(self, n: "Stack") -> None:
+        """Ask the nav stack's lifecycle managers whether they are active, until
+        each says yes (answers come on the executor), from scratch at every start."""
+        if n.starts != self._active_key:
+            self._active_key, self._active, self._active_fut = n.starts, {}, {}
+        for m in self._managers(n):
+            if self._active.get(m):
+                continue
+            fut = self._active_fut.get(m)
+            if fut is not None and fut.done():
+                res = fut.result()
+                self._active[m] = bool(res is not None and res.success)
+                fut = None
+                self._active_fut.pop(m, None)
+            if fut is None and not self._active.get(m) and self._active_cli[m].service_is_ready():
+                self._active_fut[m] = self._active_cli[m].call_async(Trigger.Request())
+
+    def _nav_not_up(self, why: str) -> None:
+        """Nav2 has not come up: restart it (NAV_RESTARTS times), then give up and say so."""
+        n = STACKS["nav"]
+        try:
+            n.stop()
+            if n.retries < NAV_RESTARTS:
+                n.retries += 1
+                self.get_logger().warn(f"Nav2 did not come up ({why}): restarting it ({n.retries}/{NAV_RESTARTS})")
+                n.start(n.cmds, n.args, stagger=n.stagger, retry=True)
+            else:
+                n._set("failed", f"Nav2 did not come up {NAV_RESTARTS + 1} times ({why}): see the log below")
+        finally:
+            with self._lock:
+                self.busy = ""
+            self.publish_state()
 
     def publish_state(self) -> None:
         stacks = {k: s.to_dict() for k, s in STACKS.items()}
@@ -304,7 +483,7 @@ class Launcher(Node):
         maps = _maps()
         msg = {"version": 1, "rcs": ROBOT_SIDE, "time": time.time(), "stacks": stacks,
                "maps": sorted(maps), "map_mtimes": {k: _mtime(v) for k, v in maps.items()},
-               "caps": ["map_transfer"] + (["estop_gate"] if GATED_TOPIC in " ".join(BRINGUP_CMD) else []), "busy": self.busy, "result": self.result,
+               "caps": ["map_transfer", "zones"] + (["estop_gate"] if GATED_TOPIC in " ".join(BRINGUP_CMD) else []), "busy": self.busy, "result": self.result,
                "camera": {**camera_usb(), "publishers": self.count_publishers("/camera/depth/image_raw")}}
         self.pub.publish(String(data=json.dumps(msg)))
 
@@ -323,6 +502,9 @@ class Launcher(Node):
             return
         if cmd.get("op") in ("map_get", "map_put"):     # files only: fine while a stack runs
             threading.Thread(target=self._exchange_map, args=(cmd,), daemon=True).start()
+            return
+        if cmd.get("op") in ("zones_get", "zones_put"):     # files, and a reload if Nav2 uses them
+            threading.Thread(target=self._zones, args=(cmd,), daemon=True).start()
             return
         with self._lock:
             if self.busy:
@@ -344,6 +526,44 @@ class Launcher(Node):
 
     def _exchange_map(self, cmd: dict) -> None:
         self.map_data_pub.publish(String(data=json.dumps(self.exchange.handle(cmd))))
+
+    def _zones(self, cmd: dict) -> None:
+        name = str(cmd.get("name", ""))
+        out = {"id": str(cmd.get("id", "")), "name": name, "ok": True, "msg": "", "zones": [], "applied": False}
+        try:
+            path = _maps().get(name)
+            if path is None:
+                raise ValueError(f"map {name!r} not found on the robot")
+            if cmd.get("op") == "zones_put":
+                zones = zone_masks.write_zones(path, cmd.get("zones"))
+                out["msg"] = f"{len(zones)} zone(s) saved on the robot"
+                if _nav_runs_on(name):
+                    out["applied"], why = self._reload_zones(path, zones)
+                    out["msg"] += ", in use now" if out["applied"] else f"; {why}"
+            out["zones"] = zone_masks.read_zones(path)
+        except Exception as e:      # a bad request must not touch the launcher
+            out.update(ok=False, msg=str(e))
+        self.zones_pub.publish(String(data=json.dumps(out)))
+        if cmd.get("op") == "zones_put":
+            self.get_logger().info(f"zones of {name}: {out['msg']}")
+
+    def _reload_zones(self, map_yaml: str, zones: list):
+        """New masks into the running filters (their map servers reload the files)."""
+        try:
+            masks = zone_masks.write_masks(map_yaml, zones, ZONES_DIR)
+        except Exception as e:
+            return False, f"not applied: {e}"
+        for server, key in (("keepout_mask_server", "keepout"), ("speed_mask_server", "speed")):
+            cli = self._load_map_clients.get(server)
+            if cli is None or not cli.wait_for_service(timeout_sec=3.0):
+                return False, "Nav2 runs without zone filters: restart navigation to use them"
+            fut = cli.call_async(cli.srv_type.Request(map_url=masks[key]))
+            end = time.monotonic() + 10.0          # main() spins the node: the answer comes there
+            while not fut.done() and time.monotonic() < end:
+                time.sleep(0.05)
+            if not fut.done() or fut.result() is None or fut.result().result != 0:      # RESULT_SUCCESS
+                return False, f"not applied: {server} did not load the new mask"
+        return True, ""
 
     def _run(self, cmd: dict) -> None:
         try:

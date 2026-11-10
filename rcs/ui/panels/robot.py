@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QRadioButton, QVBoxLayout, QWidget,
 )
 
+from ... import i18n
 from ...core.versions import robot_side_note
 from ...core.ros_client import RosClient
 
@@ -83,7 +84,7 @@ class _StackBox(QGroupBox):
             since = st.get("since")
             ago = f' <span style="color:{MUTED}">· {_duration(now - since)}</span>' \
                 if since and key in ("running", "failed") else ""
-            detail = f' <span style="color:{MUTED}">— {st["detail"]}</span>' if st.get("detail") else ""
+            detail = f' <span style="color:{MUTED}">— {i18n.tr(st["detail"])}</span>' if st.get("detail") else ""
             self.status.setText(f'<span style="color:{color}">●</span> {text}{ago}{detail}')
         lines = st.get("log") or []
         text = "\n".join(lines)

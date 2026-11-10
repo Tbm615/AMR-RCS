@@ -91,7 +91,7 @@ sudo reboot                                               # or restart start_rcs
 | App button | Command on the robot |
 |---|---|
 | Robot base → Start | `ros2 launch bringup bringup.launch.py cmd_vel_topic:=/rcs/cmd_vel_gated` (refused while `rcs_safety.py` is not running) |
-| Navigation, saved map | `ros2 launch navigation robot_navigation.launch.py map:=<map>.yaml use_cbf:=true rviz:=false` |
+| Navigation, saved map | `ros2 launch nav_map.launch.py map:=<map>.yaml ...`: one launch as `robot_navigation.launch.py` (map server + AMCL, Nav2, CBF filter) without its automatic initial pose of (0, 0), with the map's zones (`costmap_filters.launch.py` and a copy of `nav2_smac_mppi.yml` with the filters, see Keepout and speed zones) |
 | Navigation, SLAM | `ros2 launch slam slamtoolbox.launch.xml`, `ros2 launch nav2_bringup navigation_launch.py params_file:=<navigation>/config/nav2_smac_mppi.yml`, `ros2 run navigation cbf_safety_filter.py` (remapped as in `robot_navigation.launch.py`) |
 | Save map | `ros2 run nav2_map_server map_saver_cli -f $RCS_WS/maps/<name>` |
 
@@ -101,18 +101,60 @@ and `$RCS_WS/maps` (saved maps).
 Rules: navigation needs the base; stopping the base stops navigation first;
 starting navigation while it runs restarts it with the new map or mode. If
 one process of a stack exits on its own, the rest of the stack is stopped
-and the stack shows *failed* with its last log lines. Stop is Ctrl-C
+and the stack shows *failed* with its last log lines. On a saved map Nav2
+is *running* once `/lifecycle_manager_localization/is_active` (and
+`..._zones/is_active`) say so; `..._navigation` becomes active only after the
+robot's pose is set (its costmaps wait for map -> base_link). A bring-up can
+hang on a lost service answer (seen with Fast DDS in simulation; the robot
+runs Cyclone DDS). When a lifecycle manager gives up, when Nav2 is not up
+after 60 s (`RCS_NAV_UP_TIMEOUT`), or when navigation is still not active 45 s
+after the pose (`RCS_NAV_ACTIVE_AFTER_POSE`), the launcher restarts it by
+itself, up to twice, then shows *failed*. Stop is Ctrl-C
 (SIGINT) to the whole process group, then SIGTERM and SIGKILL if needed.
 If the launcher itself restarts, it stops the programs it had started.
 
 Protocol (JSON in `std_msgs/String`): commands on `/rcs/launcher/cmd`, state
 on `/rcs/launcher/state` (1 Hz and on every change, transient local), map
-previews on `/rcs/launcher/preview`, map copies on `/rcs/launcher/map_data`.
-See the docstring at the top of `rcs_launcher.py`. `map_preview.py`,
-`map_exchange.py`, `map_files.py` and `camera_check.py` must sit next to it.
+previews on `/rcs/launcher/preview`, map copies on `/rcs/launcher/map_data`,
+zones on `/rcs/launcher/zones`. See the docstring at the top of
+`rcs_launcher.py`. `map_preview.py`, `map_exchange.py`, `map_files.py`,
+`zone_masks.py`, `nav_map.launch.py`, `costmap_filters.launch.py` and
+`camera_check.py` must sit next to it.
+
+Nav2 on a saved map is started **without an initial pose**: set it on the
+2D Map page (or press *Use last position*); the Status page says until then.
+`robot_navigation.launch.py` sends (0, 0, 0) a few seconds after its start,
+which overwrote a pose set in those seconds.
 
 Maps sent from the app land in `$RCS_WS/maps`. The app can replace a map there
 only if the operator confirms it, and never the one Nav2 is running on.
+
+## Keepout and speed zones
+
+Drawn on the app's 2D Map page, kept on the robot next to their map as
+`<map>.zones.json`. When Nav2 starts on that map the launcher turns them into
+two masks the size of the map and starts Nav2's costmap filters
+(`costmap_filters.launch.py`: two `map_server`s for the masks, two
+`costmap_filter_info_server`s, a lifecycle manager):
+
+- **keepout**: lethal in both costmaps: Nav2 plans no path into the zone and
+  refuses goals inside it;
+- **slow**: Nav2's `SpeedFilter` (in the local costmap, which updates several
+  times a second) publishes `/speed_limit` (percent of the usual top speed)
+  while the robot is inside; where two overlap, the lower one. Measured in
+  simulation: 30 % of 0.4 m/s held at 0.12 m/s inside the zone.
+
+The filters go into a copy of `nav2_smac_mppi.yml`
+(`~/.ros/rcs_zones/nav2_params.yaml`, with the masks; `RCS_ZONES_DIR` moves it);
+the workspace's file is not changed. They run even with no zones (empty
+masks), so saving zones while Nav2 runs applies them at once: the launcher
+reloads the masks (`<keepout|speed>_mask_server/load_map`). Zones stop Nav2
+only: manual driving (Teleop, the gamepad) can still enter them, and the
+app's Teleop page says when the robot is in one. Needs
+`ros-humble-nav2-map-server` and `ros-humble-nav2-lifecycle-manager` (part of
+Nav2), and `.pgm` maps.
+
+Changing zones needs the operator role; the gateway's audit log has each change.
 
 ## E-STOP
 

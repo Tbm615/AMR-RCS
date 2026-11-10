@@ -38,13 +38,15 @@ EN = {
 <li><b>Gamepad</b> on this PC: hold LB and use the sticks; B is E-STOP.</li>
 <li><b>Clearance</b> bars: distance from the body to the nearest obstacle. Display only: the app does not brake for you.</li>
 <li>The app sends only while you drive, so Nav2 is never blocked.</li>
+<li>Under the bars: the keepout or slow zone the robot is in or near. Zones stop Nav2, not you.</li>
 </ul>"""),
     "map": ("2D Map", """
 <ul>
 <li>The map, the lidar points (red), the planned path (green) and the robot seen from above.</li>
 <li><b>Press and drag</b> on the map: an arrow follows the mouse; release to send. Choose what it sets in <b>Tools</b>: goal, initial pose, waypoint, or measure a distance.</li>
 <li><b>Use last position</b>: the initial pose where the robot stopped last time on this map.</li>
-<li>Wheel zooms, right-drag pans; <b>Center on robot</b> / <b>Whole map</b>. <b>Overlays</b>: costmaps, places, waypoints.</li>
+<li>Wheel zooms, right-drag pans; <b>Center on robot</b> / <b>Whole map</b>. <b>Overlays</b>: costmaps, places, waypoints, zones.</li>
+<li><b>Keepout and speed zones</b> of the map Nav2 runs on: <b>+ Keepout</b> (Nav2 never drives in, goals there are refused) or <b>+ Slow</b> (Nav2 drives at most the % set). Click the corners on the map, double-click to close; then <b>Save to robot</b>: Nav2 uses them at once. Manual driving is not limited by zones.</li>
 </ul>"""),
     "nav": ("Navigation", """
 <ul>
@@ -60,7 +62,7 @@ EN = {
 </ul>"""),
     "3d": ("3D Map", """
 <ul>
-<li>A colored 3D map built from the camera while this page is open (<b>Record 3D map</b>).</li>
+<li>A colored 3D map built from the camera (<b>Record 3D map</b>), on every page (<b>Record on every page</b>, on by default; off: only while this page is open).</li>
 <li><b>View</b>: fusion with the 2D layers, 3D only, or top view. Drag to orbit, wheel to zoom.</li>
 <li>With a mouse mode other than orbit, press on the floor and drag toward the heading to send a goal, a pose or a waypoint.</li>
 <li><b>Save PLY…</b> / <b>Open PLY…</b>; raise the <b>Voxel</b> size if the map gets full.</li>
@@ -132,13 +134,15 @@ VI = {
 <li><b>Tay cầm</b> trên máy này: giữ LB và dùng cần; B là dừng khẩn.</li>
 <li>Thanh <b>khoảng trống</b>: khoảng cách từ thân robot tới vật cản gần nhất. Chỉ để xem: app không phanh thay bạn.</li>
 <li>App chỉ gửi lệnh khi bạn đang lái, nên không bao giờ chặn Nav2.</li>
+<li>Dưới các thanh: vùng cấm hoặc vùng chậm mà robot đang ở trong hoặc ở gần. Vùng chỉ giới hạn Nav2, không giới hạn bạn.</li>
 </ul>"""),
     "map": ("Bản đồ 2D", """
 <ul>
 <li>Bản đồ, điểm lidar (đỏ), đường đi dự kiến (xanh lá) và robot nhìn từ trên xuống.</li>
 <li><b>Nhấn và kéo</b> trên bản đồ: mũi tên theo chuột, thả ra để gửi. Chọn việc nó làm trong <b>Công cụ</b>: đặt đích, vị trí ban đầu, điểm dừng, hoặc đo khoảng cách.</li>
 <li><b>Dùng vị trí cuối</b>: đặt vị trí ban đầu tại chỗ robot dừng lần trước trên bản đồ này.</li>
-<li>Lăn chuột để phóng to, kéo chuột phải để di chuyển; <b>Về robot</b> / <b>Toàn bản đồ</b>. <b>Lớp hiển thị</b>: costmap, điểm đã lưu, điểm dừng.</li>
+<li>Lăn chuột để phóng to, kéo chuột phải để di chuyển; <b>Về robot</b> / <b>Toàn bản đồ</b>. <b>Lớp hiển thị</b>: costmap, điểm đã lưu, điểm dừng, vùng.</li>
+<li><b>Vùng cấm và vùng giảm tốc</b> của bản đồ Nav2 đang chạy: <b>+ Vùng cấm</b> (Nav2 không bao giờ đi vào, đích trong đó bị từ chối) hoặc <b>+ Vùng chậm</b> (Nav2 chạy tối đa % đã đặt). Bấm các góc trên bản đồ, bấm đúp để khép vùng; rồi <b>Lưu lên robot</b>: Nav2 dùng ngay. Lái tay không bị giới hạn bởi vùng.</li>
 </ul>"""),
     "nav": ("Dẫn đường", """
 <ul>
@@ -154,7 +158,7 @@ VI = {
 </ul>"""),
     "3d": ("Bản đồ 3D", """
 <ul>
-<li>Bản đồ 3D có màu dựng từ camera khi trang này đang mở (<b>Ghi bản đồ 3D</b>).</li>
+<li>Bản đồ 3D có màu dựng từ camera (<b>Ghi bản đồ 3D</b>), ở mọi trang (<b>Ghi ở mọi trang</b>, bật sẵn; tắt: chỉ khi trang này mở).</li>
 <li><b>Kiểu xem</b>: kết hợp với các lớp 2D, chỉ 3D, hoặc nhìn từ trên. Kéo để xoay, lăn chuột để phóng to.</li>
 <li>Ở chế độ chuột khác xoay, nhấn trên sàn và kéo theo hướng để gửi đích, vị trí hoặc điểm dừng.</li>
 <li><b>Lưu PLY…</b> / <b>Mở PLY…</b>; tăng <b>Voxel</b> nếu bản đồ đầy.</li>

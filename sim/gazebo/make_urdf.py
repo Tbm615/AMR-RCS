@@ -27,7 +27,11 @@ from pathlib import Path
 
 WHEEL_RADIUS = 0.0825       # bringup/config/controllers.yaml
 WHEEL_SEPARATION = 0.39
-WHEEL_WIDTH = 0.04          # tyre: inner 35 cm, outer 43 cm apart
+# The tyre is 4 cm wide (inner 35 cm, outer 43 cm apart), but a flat cylinder
+# touches ODE's floor at its rims, and which rim carries the weight changes from
+# run to run: on the inner ones the track was 0.35 m and odometry turned 10 %
+# short. A 1 cm contact strip keeps the track at wheel_separation.
+WHEEL_WIDTH = 0.01
 DRIVE_WHEELS = ("left_wheel_joint", "right_wheel_joint")
 
 GAZEBO = f"""
