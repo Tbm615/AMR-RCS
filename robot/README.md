@@ -15,6 +15,9 @@ The script sources ROS and the workspace (`RCS_WS`, default
 `/home/iop/tbm_test`), sets the robot's DDS settings (CycloneDDS, domain 0,
 `bringup/config/cyclonedds.xml`) and restarts any program that exits (the
 E-STOP gate and the battery service after 1 s, the others after 5 s).
+rosbridge's launch also runs rosapi and would go on without rosbridge, so the
+script watches rosbridge itself: if it is gone, the pair starts again (about
+15 s, measured on the robot).
 
 ## Install
 

@@ -167,8 +167,8 @@ TEXTS = {
     "Saves the map Nav2 is using (usually the one built with SLAM) on the robot. It then appears under \"Use a saved map\".":
         "Lưu bản đồ Nav2 đang dùng (thường là bản đồ vừa lập bằng SLAM) trên robot. Sau đó nó hiện trong \"Dùng bản đồ đã lưu\".",
     "After it starts, set the robot's position on the 2D Map page (Set initial pose).": "Khi đã chạy, đặt vị trí robot ở trang Bản đồ 2D (Đặt vị trí ban đầu).",
-    "The map starts empty and grows as the robot drives (Teleop or goals). No initial pose needed. Save it below when done.":
-        "Bản đồ bắt đầu trống và lớn dần khi robot chạy (lái tay hoặc gửi đích). Không cần vị trí ban đầu. Xong thì lưu ở bên dưới.",
+    "The map starts empty and grows as the robot drives (Teleop or goals): the lidar is added every 0.5 m driven, turning on the spot adds nothing. Drive into each part of the area. No initial pose needed. Save it below when done.":
+        "Bản đồ bắt đầu trống và lớn dần khi robot chạy (lái tay hoặc gửi đích): cứ chạy 0.5 m lidar được thêm vào một lần, quay tại chỗ không thêm gì. Hãy chạy vào từng phần của khu vực. Không cần vị trí ban đầu. Xong thì lưu ở bên dưới.",
     # schedule
     "New schedule": "Lịch mới", "Start at": "Bắt đầu lúc", "On": "Bật", "Battery at least": "Pin tối thiểu",
     "Below this charge the run is skipped. 0: do not check the battery": "Dưới mức này thì bỏ qua lần chạy. 0: không kiểm tra pin",
@@ -190,6 +190,8 @@ TEXTS = {
     "Robot base": "Thân robot", "Odometry": "Odom", "Lidar": "Lidar", "Localization": "Định vị", "Robot disk": "Ổ đĩa robot",
     "not answering": "không trả lời", "arriving": "đang nhận", "not arriving": "không nhận được", "robot base not running": "thân robot chưa chạy",
     "the robot is on the map": "robot đã định vị trên bản đồ", "not on the map yet": "chưa định vị trên bản đồ",
+    "Drive a little so AMCL can match the lidar to the map, or set the initial pose again. If it stays unsure, the map may be out of date: build it again (SLAM).":
+        "Cho robot chạy một chút để AMCL khớp lidar với bản đồ, hoặc đặt lại vị trí ban đầu. Nếu vẫn chưa chắc, có thể bản đồ đã cũ: vẽ lại (SLAM).",
     "no E-STOP service on the robot": "robot không có dịch vụ dừng khẩn", "not signed in": "chưa đăng nhập",
     "running": "đang chạy", "stopped": "đã tắt", "starting": "đang bật", "failed": "lỗi", "external": "chạy ngoài app",
     "Set the initial pose on the 2D Map (or Use last position).": "Đặt vị trí ban đầu ở Bản đồ 2D (hoặc Dùng vị trí cuối).",
@@ -263,6 +265,7 @@ TEXTS = {
 }
 
 PATTERNS = [
+    (r"on the map, but unsure \(±(\S+) m, ±(\S+)°\)", r"đã định vị nhưng chưa chắc (±\1 m, ±\2°)"),
     (r"connected — (.+)", r"đã kết nối — \1"),
     (r"Events  \((\d+)\)", r"Sự kiện  (\1)"),
     (r"(\d+) thing\(s\) to look at", r"\1 điều cần xem"),

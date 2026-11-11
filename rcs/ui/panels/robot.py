@@ -279,8 +279,9 @@ class RobotPanel(QWidget):
         self.nav_hint.setText(
             "After it starts, set the robot's position on the 2D Map page "
             "(Set initial pose)." if self.rb_map.isChecked() else
-            "The map starts empty and grows as the robot drives (Teleop or goals). "
-            "No initial pose needed. Save it below when done.")
+            "The map starts empty and grows as the robot drives (Teleop or goals): the lidar "
+            "is added every 0.5 m driven, turning on the spot adds nothing. Drive into each "
+            "part of the area. No initial pose needed. Save it below when done.")
 
     def choice(self) -> dict:
         """What is selected, for the robot's saved state."""

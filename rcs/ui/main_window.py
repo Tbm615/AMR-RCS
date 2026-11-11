@@ -895,6 +895,7 @@ class MainWindow(QMainWindow):
             "gate": self.gate_state or None, "estop": self._estop_on, "battery": getattr(self, "_battery", None),
             "ages": {k: now - st.last_t for k, st in self.ros.topic_stats.items() if st.last_t > 0},
             "localized": bool(t and self.tf.pose_xyyaw(t.map_frame, t.base_frame) is not None),
+            "amcl": self.ros.amcl_spread,       # AMCL says it on each update only: valid while it runs
             "camera_problem": self._camera_problem,
             "robot_note": versions.robot_side_note(launcher) if online else "",
             "role": self.ros.role, "user": self.ros.user,

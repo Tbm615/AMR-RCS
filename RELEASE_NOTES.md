@@ -10,6 +10,68 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/Tbm615/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### v0.6.0
+
+The v0.6 betas, now tested on the real robot (Jetson, Cyclone DDS, JK-BMS over
+the USB Bluetooth dongle) by `tests/test_real_robot.py`: the real app against
+the real robot side, every page, standing still and driving. **Update the robot
+side too** (copy `robot/` to the robot, `bash install_robot.sh`): this app
+needs robot side v0.6.0 and says so until it has it.
+
+What v0.6 brings over v0.5.0 (details in the beta notes below):
+- **Keepout and speed zones** drawn on the 2D Map, kept on the robot, obeyed
+  by Nav2 (beta.2).
+- **Sign-in and roles** on the robot, with an audit log (beta.1).
+- **Health** on the Status page and a diagnostic bundle (beta.1).
+- **Robot models**: the Hinson robot as it is, drive wheels in place (beta.1).
+- **The robot's own E-STOP gate**, stopping it when the driving app is lost
+  (beta.1).
+- **Battery log on the robot** and battery history, **Schedule**, **Fleet**,
+  going to charge by itself, Vietnamese (beta.1).
+- **Nav2 without the automatic (0, 0) pose**, a launcher that restarts a Nav2
+  that hangs while starting, the 3D map recording on every page (beta.2).
+
+New since v0.6.0-beta.2:
+
+**Fixes**
+- **The robot drawn at the old pose (often (0, 0)) on a newly started map.**
+  The app kept the last `map -> odom` of a stopped SLAM or Nav2 for good, so
+  after stopping SLAM and starting Nav2 on a saved map the robot showed at
+  that pose (at (0, 0) right after a restart of the base) before anyone set
+  the initial pose, and the Status page said *localized*. A transform that
+  stops coming now goes after 5 s, and the app drops it at once when the
+  robot says navigation stopped or restarts. `/tf_static` is kept as before.
+- **Robot side:** after rosbridge crashed, nothing listened on port 9090
+  again until a reboot: its launch went on running rosapi alone, so the start
+  script never restarted it. The start script now watches rosbridge itself
+  and restarts the pair (measured on the robot: back in 17 s).
+
+**Status page**
+- **Localization: on the map, but unsure (±0.40 m, ±18°)** when AMCL's spread
+  is over 0.30 m or 12°, with what to do. Seen on the robot: on a map built
+  from one spot AMCL was 0.15 m and 4.5° off while the page said *ok*.
+
+**Robot programs**
+- The SLAM hint says the map grows every 0.5 m driven and that turning on
+  the spot adds nothing (measured: a full turn added no scan to the map).
+
+**Measured on the robot** (see `tests/test_real_robot.py` for each check)
+- Lidar 20 Hz (4995 points), odometry 100 Hz, camera 27 Hz on the robot;
+  in the app over Wi-Fi: scan 8-12 Hz, camera 7-13 frames/s.
+- Teleop exactly at the set speed (0.113 m/s at Slow), turning about the
+  robot's centre (2.2 cm); E-STOP stops it in 0.32 s and holds with the key
+  down; losing the app while driving stops it (the robot's gate, 3 s).
+- Goals reached within 0.11 m, Esc cancels at once, a 2-waypoint mission and
+  a saved place; keepout zone lethal in the costmap and refused by Nav2 and
+  the app; in a 30 % slow zone Nav2 holds 0.121 m/s (limit 0.12), 0.21 s
+  after the robot enters.
+- Battery: 15 cells, pack voltage = sum of cells. The Bluetooth link drops
+  about once or twice a minute (CONNECTION_TIMEOUT, RSSI about -82 dBm) and is
+  back in 1-2 s, so the Battery page refreshes with a short gap now and then.
+  A dongle nearer the battery (USB extension) would make it rarer. Asking the
+  BMS for a longer supervision timeout did not change it (5 vs 6 drops in
+  3 min), so that change was not kept.
+
 ### v0.6.0-beta.2
 
 A beta, tested on this PC only (mock robots, real Nav2 with the real robot

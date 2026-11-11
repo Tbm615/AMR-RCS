@@ -9,7 +9,13 @@ robot_note (str), role, user, gateway (bool | None), nav_state (str).
 """
 from __future__ import annotations
 
+import math
+
 from typing import List, NamedTuple
+
+
+LOC_UNSURE_M = 0.30        # AMCL's spread (1 sigma) above which the pose is called unsure
+LOC_UNSURE_DEG = 12.0
 
 
 class Check(NamedTuple):
@@ -63,7 +69,15 @@ def checks(ctx: dict) -> List[Check]:
         else:
             out.append(Check(key, title, "off", "robot base not running"))
     nav = ctx.get("launcher", {}).get("stacks", {}).get("nav", {}).get("state")
-    if ctx.get("localized"):
+    amcl = ctx.get("amcl")
+    if ctx.get("localized") and amcl and (amcl[0] > LOC_UNSURE_M or amcl[1] > math.radians(LOC_UNSURE_DEG)):
+        # AMCL has a pose but its particles are spread out: the drawn robot can be off
+        # (seen on the robot: 0.15 m and 4.5 degrees off on a map built from one spot)
+        out.append(Check("loc", "Localization", "warn",
+                         f"on the map, but unsure (±{amcl[0]:.2f} m, ±{math.degrees(amcl[1]):.0f}°)",
+                         "Drive a little so AMCL can match the lidar to the map, or set the initial pose "
+                         "again. If it stays unsure, the map may be out of date: build it again (SLAM)."))
+    elif ctx.get("localized"):
         out.append(Check("loc", "Localization", "ok", "the robot is on the map"))
     elif nav == "running":
         out.append(Check("loc", "Localization", "warn", "not on the map yet",

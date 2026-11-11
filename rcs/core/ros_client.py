@@ -246,6 +246,8 @@ class RosClient(QObject):
         self._base_state = ""           # bringup state last seen from the launcher
         self._nav_state = ""            # Nav2 / SLAM state last seen from the launcher
         self._map_t = -1e9              # last /map received
+        self.amcl_spread = None         # (sigma xy m, sigma yaw rad, monotonic time) from /amcl_pose,
+                                        # until Nav2 stops (AMCL says it only when it updates)
         self._nav_up_t = -1e9           # when Nav2 / SLAM was last seen coming up
         self._map_retry_t = -1e9        # last time /map was asked for again
         self.role = ""                  # from the robot's gateway; "" = no gateway, all allowed
@@ -331,6 +333,7 @@ class RosClient(QObject):
             return
         if self._ros is not None:
             self._drop_connection()
+        self.amcl_spread = None         # another robot, or this one after a while: ask anew
         self._want_connected = True
         self._gen += 1
         gen = self._gen
@@ -494,7 +497,10 @@ class RosClient(QObject):
             self._subscribe("/tf", "tf2_msgs/msg/TFMessage", self._on_tf)
             # Static transforms (e.g. base_link->laser_frame from the URDF) only
             # ever arrive on /tf_static.
-            self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage", self._on_tf)
+            self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage", self._on_tf_static)
+            # how sure AMCL is (its covariance), for the Status page: once a second is plenty
+            self._subscribe("/amcl_pose", "geometry_msgs/msg/PoseWithCovarianceStamped", self._on_amcl,
+                            throttle_rate=1000)
             self._subscribe(LAUNCHER_STATE, "std_msgs/msg/String", self._on_launcher_state)
             self._subscribe(LAUNCHER_PREVIEW, "std_msgs/msg/String", self._on_map_preview)
             self._subscribe(LAUNCHER_MAP_DATA, "std_msgs/msg/String", self._on_map_data)
@@ -533,7 +539,7 @@ class RosClient(QObject):
                     sub.unsubscribe()
                 except Exception:  # noqa: BLE001
                     pass
-            self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage", self._on_tf)
+            self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage", self._on_tf_static)
 
     def _on_session(self, m: dict) -> None:         # network thread
         try:
@@ -589,6 +595,19 @@ class RosClient(QObject):
     def _on_tf(self, m: dict) -> None:              # network thread; cheap
         self._mark("tf")
         self.tf.ingest(m)
+        self._post("tf_received", None, coalesce=True)
+
+    def _on_amcl(self, m: dict) -> None:            # network thread
+        try:
+            c = m["pose"]["covariance"]
+            sxy = math.sqrt(max(float(c[0]), float(c[7]), 0.0))
+            syaw = math.sqrt(max(float(c[35]), 0.0))
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+        self.amcl_spread = (sxy, syaw, time.monotonic())
+
+    def _on_tf_static(self, m: dict) -> None:       # network thread
+        self.tf.ingest(m, static=True)
         self._post("tf_received", None, coalesce=True)
 
     # ---- decoder jobs (decoder thread) ----
@@ -719,6 +738,12 @@ class RosClient(QObject):
             now = time.monotonic()
             if nav == "running" and self._nav_state != "running":
                 self._nav_up_t = now
+            if self._nav_state == "running" and nav != "running":
+                # Nav2 or SLAM stopped (or restarts): its map -> odom is gone. Kept, the
+                # next map would show the robot at the old pose before the initial pose.
+                t = self.profile.topics if self.profile else None
+                self.tf.forget(t.map_frame if t else "map", t.odom_frame if t else "odom")
+                self.amcl_spread = None
             self._nav_state = nav
             # up for a while and still no map since: ask again (every 5 s)
             if nav == "running" and self._map_t < self._nav_up_t and now - self._nav_up_t > 3.0:

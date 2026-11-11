@@ -63,6 +63,13 @@ def test_checks() -> None:
     check("low battery and a full disk", level(cs, "battery") == "error" and level(cs, "disk") == "warn")
     cs = health.checks({**base, "localized": False})
     check("Nav2 up, not localized: set the initial pose", level(cs, "loc") == "warn")
+    # AMCL's spread as measured on the robot: 0.40 m and 18 degrees (it was 0.15 m, 4.5 degrees off)
+    cs = health.checks({**base, "amcl": (0.40, 0.31, 0.0)})
+    loc = [c for c in cs if c.key == "loc"][0]
+    check("AMCL unsure: localized but a warning, with the spread", loc.level == "warn" and "±0.40 m" in loc.text
+          and "±18°" in loc.text, loc.text)
+    cs = health.checks({**base, "amcl": (0.08, 0.04, 0.0)})
+    check("AMCL sure: ok", level(cs, "loc") == "ok")
     cs = health.checks({**base, "robot_note": "The robot side is v0.5.0, update it"})
     check("old robot side said", level(cs, "robotside") == "warn")
     cs = health.checks({**base, "gateway": True, "role": ""})

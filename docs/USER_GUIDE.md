@@ -320,7 +320,10 @@ Choose how the robot knows where it is, then click **Start**:
   points fall on the walls afterwards.
 - **Build a new map while driving (SLAM):** the map starts empty and grows on
   the 2D Map page as the robot moves (Teleop or goals). No initial pose
-  needed; goals work right away inside the mapped area.
+  needed; goals work right away inside the mapped area. SLAM adds the lidar to
+  the map every 0.5 m driven (slam_toolbox's `minimum_travel_distance`):
+  turning on the spot adds nothing, and the lidar sees nothing behind the
+  robot, so drive into each part of the area, facing different ways.
 
 While navigation runs, the button reads **Restart**: change the map or the
 mode and click it to switch.
@@ -457,6 +460,12 @@ map (Robot programs page), set the robot's position as above or press **Use
 last position**; the Status page says *not on the map yet* until you do.
 (Earlier versions let the robot's launch file set (0, 0) a few seconds after
 the start, which could overwrite the pose you had just set.)
+
+Once the pose is set, the Status page also says how sure AMCL is: *on the map,
+but unsure (±0.40 m, ±18°)* when its spread is over 0.30 m or 12°. The drawn
+robot can then be off by a few tens of centimetres and degrees. Drive a little
+(AMCL updates after about 0.25 m or 0.2 rad) or set the pose again; if it stays
+unsure, the map is probably out of date (furniture moved): build it again.
 
 ### Keepout and speed zones
 

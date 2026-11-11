@@ -443,6 +443,22 @@ def test_tf() -> None:
     check("map→laser x", laser is not None and abs(laser[0] - 1.0) < 1e-5)
     check("map→laser y", laser is not None and abs(laser[1] - 2.4) < 1e-5)
 
+    # a /tf transform that stops coming goes away; /tf_static stays
+    stale = TFCache()
+    stale.STALE_S = 0.2
+    stale.ingest({"transforms": tf_msg["transforms"][:2]})                 # map->odom, odom->base_link
+    stale.ingest({"transforms": tf_msg["transforms"][2:]}, static=True)    # base_link->laser
+    time.sleep(0.3)
+    check("stopped SLAM/AMCL: no pose on the map any more", stale.pose_xyyaw("map", "base_link") is None)
+    stale.ingest({"transforms": tf_msg["transforms"][1:2]})                # the base still runs
+    check("odom pose still there", stale.pose_xyyaw("odom", "base_link") is not None)
+    check("/tf_static never goes stale", stale.pose_xyyaw("base_link", "laser_frame") is not None)
+    stale.ingest({"transforms": tf_msg["transforms"][:1]})
+    check("localization back: pose on the map again", stale.pose_xyyaw("map", "laser_frame") is not None)
+    stale.forget("map", "odom")
+    check("forget(): gone at once", stale.pose_xyyaw("map", "base_link") is None
+          and stale.pose_xyyaw("odom", "base_link") is not None)
+
 
 # ---- 5. Mission executor ----
 

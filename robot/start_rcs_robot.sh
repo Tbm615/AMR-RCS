@@ -45,11 +45,28 @@ rosbridge() {
     # A rosbridge left behind (it ignores SIGTERM: pkill without -INT) keeps
     # its port with its ROS side shut down: the app would connect to it and
     # get nothing, and this one could not start. Clear it out first.
-    if pkill -INT -f "rosbridge_server/rosbridge_websocket"; then
+    if pkill -INT -f "rosbridge_server/rosbridge_websocket|rosapi/rosapi_node"; then
         sleep 3
-        pkill -KILL -f "rosbridge_server/rosbridge_websocket"
+        pkill -KILL -f "rosbridge_server/rosbridge_websocket|rosapi/rosapi_node"
     fi
-    ros2 launch rosbridge_server rosbridge_websocket_launch.xml $BRIDGE_ARGS
+    ros2 launch rosbridge_server rosbridge_websocket_launch.xml $BRIDGE_ARGS &
+    local launch=$!
+    # The launch also runs rosapi and does not end when rosbridge does: after a
+    # rosbridge crash it went on with rosapi alone, nothing listened on the port,
+    # and no app could reach the robot until a reboot. Watch rosbridge itself.
+    sleep 15
+    while kill -0 "$launch" 2>/dev/null; do
+        if ! pgrep -f "rosbridge_server/rosbridge_websocket" > /dev/null; then
+            echo "=== $(date) rosbridge_websocket is gone: stopping the launch to start it again"
+            kill -INT "$launch" 2>/dev/null
+            sleep 8
+            kill -KILL "$launch" 2>/dev/null
+            pkill -KILL -f "rosapi/rosapi_node"
+            break
+        fi
+        sleep 2
+    done
+    wait "$launch"
 }
 
 # the gate first: bringup is refused until it runs

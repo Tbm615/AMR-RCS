@@ -7,6 +7,12 @@ the composed transform onto the ground plane for the map views.
 
 ingest() runs on the network thread and the readers on the GUI and decoder
 threads, so the edge tables are guarded by a lock.
+
+A transform from /tf that stops coming is dropped after STALE_S: the program
+that published it has stopped (SLAM, AMCL, the robot base). Kept, the last
+map -> odom of a stopped SLAM put the robot on the next map at that pose, at
+(0, 0) right after a restart of the base, before anyone set the initial pose.
+/tf_static is sent once and kept for good.
 """
 from __future__ import annotations
 
@@ -49,6 +55,8 @@ def stamp_sec(header: dict) -> float:
 
 class TFCache:
     HISTORY_S = 3.0      # how far back stamped lookups (camera frames) can reach
+    STALE_S = 5.0        # a /tf transform not heard for this long is gone (every
+                         # localization republishes map -> odom many times a second)
 
     def __init__(self) -> None:
         # (parent, child) -> (edge, last_timestamp)
@@ -56,9 +64,10 @@ class TFCache:
         # (parent, child) -> recent (stamp, edge), for lookups at a message's stamp
         self._hist: Dict[Tuple[str, str], Deque[Tuple[float, Edge]]] = {}
         self._parent_of: Dict[str, str] = {}   # child -> parent
+        self._static: set = set()               # (parent, child) from /tf_static: never stale
         self._lock = threading.Lock()
 
-    def ingest(self, tf_msg: dict) -> None:
+    def ingest(self, tf_msg: dict, static: bool = False) -> None:
         now = time.monotonic()
         with self._lock:
             for tr in tf_msg.get("transforms", []):
@@ -76,8 +85,17 @@ class TFCache:
                 except (KeyError, TypeError, ValueError, AttributeError):
                     continue
                 key = (parent, child)
+                old = self._parent_of.get(child)
+                if old is not None and old != parent:   # re-parented: the old edge is gone
+                    self._edges.pop((old, child), None)
+                    self._hist.pop((old, child), None)
+                    self._static.discard((old, child))
                 self._edges[key] = (edge, now)
                 self._parent_of[child] = parent
+                if static:
+                    self._static.add(key)
+                else:
+                    self._static.discard(key)
                 if stamp > 0:
                     h = self._hist.get(key)
                     if h is None:
@@ -97,8 +115,22 @@ class TFCache:
                 return best[1]
         return self._edges[key][0]
 
+    def forget(self, parent: str, child: str) -> None:
+        """Drop one transform now (its publisher is known to have stopped)."""
+        key = (parent.lstrip("/"), child.lstrip("/"))
+        with self._lock:
+            self._edges.pop(key, None)
+            self._hist.pop(key, None)
+            self._static.discard(key)
+            if self._parent_of.get(key[1]) == key[0]:
+                del self._parent_of[key[1]]
+
+    def _fresh(self, key: Tuple[str, str], now: float) -> bool:
+        return key in self._static or now - self._edges[key][1] <= self.STALE_S
+
     def _chain(self, target: str, source: str, stamp: Optional[float] = None) -> Optional[List[Edge]]:
-        """Edges from target down to source, or None if source is not below target."""
+        """Edges from target down to source, or None if source is not below
+        target or a /tf transform on the way has stopped coming."""
         chain = [source]
         cur = source
         while cur in self._parent_of and cur != target:
@@ -108,7 +140,11 @@ class TFCache:
                 return None
         if chain[-1] != target:
             return None
-        return [self._edge_at((chain[i], chain[i - 1]), stamp) for i in range(len(chain) - 1, 0, -1)]
+        now = time.monotonic()
+        keys = [(chain[i], chain[i - 1]) for i in range(len(chain) - 1, 0, -1)]
+        if not all(self._fresh(k, now) for k in keys):
+            return None
+        return [self._edge_at(k, stamp) for k in keys]
 
     def has_frame(self, frame: str) -> bool:
         with self._lock:

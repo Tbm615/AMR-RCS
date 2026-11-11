@@ -77,7 +77,7 @@ LOG_MAX_BYTES = 20 * 1024 * 1024
 # command passes it. RCS_ESTOP_GATE=0 starts bringup the old way, unguarded; so
 # does an RCS_BRINGUP_CMD without cmd_vel_topic:=/rcs/cmd_vel_gated (Gazebo sim).
 GATE = os.environ.get("RCS_ESTOP_GATE", "1") != "0"
-ROBOT_SIDE = "0.6.0b2"      # the release of these robot/ files: the app says when it is older than itself
+ROBOT_SIDE = "0.6.0"        # the release of these robot/ files: the app says when it is older than itself
 GATED_TOPIC = "/rcs/cmd_vel_gated"
 BRINGUP_CMD = shlex.split(os.environ.get(
     "RCS_BRINGUP_CMD",
