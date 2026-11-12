@@ -356,15 +356,20 @@ The full logs are on the robot in `~/tbm_test/runlog/rcs_bringup.log` and
 4. **Speed limits** cap the commands (defaults 0.45 m/s and 0.8 rad/s). The
    live command is shown under the joystick.
 
-Teleop commands go to `/cmd_vel_safe` at 20 Hz while you drive. When you let
-go, the app sends zero velocity for 0.3 s and then stops publishing, so it
-does not block Nav2. Like the gamepad, teleop bypasses the CBF safety
-filter: watch the robot while driving.
+Teleop commands go out at 20 Hz while you drive: on `/cmd_vel_teleop` when the
+robot side has the E-STOP gate (`/cmd_vel_safe` on an older robot side). When
+you let go, the app sends zero velocity for 0.3 s and then stops publishing.
+**Teleop goes first:** while you drive, Nav2 and a running mission are held
+back on the robot (the Events page says *teleop goes first*), and half a second
+after you let go Nav2 drives on to its goal. Like the gamepad, teleop bypasses
+the CBF safety filter: watch the robot while driving.
 
 **Gamepad.** Plug a gamepad into the PC and tick **Use gamepad** (keep your
 hands off it for a second while it calibrates). Hold **LB** and drive with the
-left stick (forward, back) and right stick (turn): nothing moves unless LB is
-held, so a knocked pad cannot start the robot. **RB** changes the speed step and
+left stick alone (up/down drives, sideways turns), or the left stick for speed
+and the right stick sideways to turn: nothing moves unless LB is held, so a
+knocked pad cannot start the robot. Pads SDL knows (Xbox, Flydigi,
+PlayStation…) have the same sticks on Windows and Linux. **RB** changes the speed step and
 **B** engages E-STOP. It works while you look at any page, even with Teleop
 closed. If the pad is unplugged the robot stops and the box unticks.
 

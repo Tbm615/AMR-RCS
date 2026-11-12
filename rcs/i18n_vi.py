@@ -262,6 +262,11 @@ TEXTS = {
     "On: the 3D map keeps growing whatever page is open (the camera's depth and color, about 1 MB/s of Wi-Fi "
     "all the time). Off: only while this page is open.": "Bật: bản đồ 3D tiếp tục được dựng dù đang mở trang nào "
     "(độ sâu và màu của camera, khoảng 1 MB/s Wi-Fi liên tục). Tắt: chỉ khi trang này đang mở.",
+    "The camera's color picture works but its depth sensor sends nothing, so the 3D map gets no frames. Unplug the camera and plug it back in, then restart Robot base.": "Hình màu của camera vẫn có nhưng cảm biến độ sâu không gửi gì, nên bản đồ 3D không nhận được frame. Rút camera ra cắm lại, rồi khởi động lại Robot base.",
+    "The camera's color picture works but its depth sensor stopped on the robot (USB errors), so the 3D map gets no frames. The camera is connected as USB 3 now; it worked as USB 2.0. Plug it into a USB 2.0 port or through a USB 2.0 cable, then restart Robot base.": "Hình màu của camera vẫn có nhưng cảm biến độ sâu đã dừng trên robot (lỗi USB), nên bản đồ 3D không nhận được frame. Camera đang kết nối kiểu USB 3; trước đây nó chạy tốt ở USB 2.0. Cắm camera vào cổng USB 2.0 hoặc qua cáp USB 2.0, rồi khởi động lại Robot base.",
+    "teleop goes first: Nav2 and the mission wait until you let go": "lái tay được ưu tiên: Nav2 và nhiệm vụ chờ đến khi bạn thả tay",
+    "no depth (3D map)": "không có độ sâu (bản đồ 3D)",
+    'The camera driver is not running on the robot: it stops when the camera drops off USB. Restart Robot base; if it happens again, connect the camera as USB 2.0 (a USB 2.0 port or cable).': "Driver camera không chạy trên robot: nó dừng khi camera rớt khỏi USB. Khởi động lại Robot base; nếu còn lặp lại, hãy kết nối camera kiểu USB 2.0 (cổng hoặc cáp USB 2.0).",
 }
 
 PATTERNS = [

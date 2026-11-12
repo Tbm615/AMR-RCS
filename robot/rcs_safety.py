@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The robot's own E-STOP: the ROS side of estop_gate.py (read that first).
 
-  /cmd_vel_safe (Twist)          in: Nav2 after the CBF filter, gamepad, RCS teleop
+  /cmd_vel_safe (Twist)          in: Nav2 after the CBF filter, the robot's gamepad
+  /cmd_vel_teleop (Twist)        in: RCS teleop; while it arrives, /cmd_vel_safe waits
   /rcs/cmd_vel_gated (Twist)     out: what the driver follows (rcs_launcher.py starts
                                  bringup with cmd_vel_topic:=/rcs/cmd_vel_gated)
   /amr/estop (Bool)              true latches the E-STOP, false releases it
@@ -12,7 +13,7 @@ If this service is not running nothing reaches the drives, so a crash of it
 stops the robot instead of letting it drive unguarded. start_rcs_robot.sh
 starts it again within a second.
 
-Environment: RCS_CMD_IN, RCS_CMD_OUT (the two Twist topics above),
+Environment: RCS_CMD_IN, RCS_TELEOP_IN, RCS_CMD_OUT (the Twist topics above),
 RCS_NAV_ACTION (default /navigate_to_pose).
 """
 from __future__ import annotations
@@ -34,6 +35,7 @@ from std_msgs.msg import Bool, String
 from estop_gate import Gate
 
 CMD_IN = os.environ.get("RCS_CMD_IN", "/cmd_vel_safe")
+TELEOP_IN = os.environ.get("RCS_TELEOP_IN", "/cmd_vel_teleop")
 CMD_OUT = os.environ.get("RCS_CMD_OUT", "/rcs/cmd_vel_gated")
 NAV = os.environ.get("RCS_NAV_ACTION", "/navigate_to_pose")
 ZERO_HZ = 20.0
@@ -49,6 +51,7 @@ class Safety(Node):
         self.out = self.create_publisher(Twist, CMD_OUT, 10)
         self.state_pub = self.create_publisher(String, "/rcs/estop/state", latched)
         self.create_subscription(Twist, CMD_IN, self._on_cmd, 10)
+        self.create_subscription(Twist, TELEOP_IN, self._on_teleop, 10)
         self.create_subscription(Bool, "/amr/estop", self._on_estop, 10)
         self.create_subscription(String, "/rcs/app/heartbeat", self._on_heartbeat, 20)
         self.create_subscription(GoalStatusArray, f"{NAV}/_action/status", self._on_nav, 10)
@@ -56,17 +59,21 @@ class Safety(Node):
         self.create_timer(1.0 / ZERO_HZ, self._hold)
         self.create_timer(0.25, self._tick)
         self.create_timer(0.5, self._publish_state)
-        self.get_logger().info(f"E-STOP gate: {CMD_IN} -> {CMD_OUT}"
+        self.get_logger().info(f"E-STOP gate: {CMD_IN}, {TELEOP_IN} (first) -> {CMD_OUT}"
                                + (", ENGAGED (kept from before)" if self.gate.engaged else ""))
         if self.gate.engaged:
             self._cancel_nav()
 
     def _on_cmd(self, m: Twist) -> None:
-        lin, ang = self.gate.filter(m.linear.x, m.angular.z)
-        if (lin, ang) == (m.linear.x, m.angular.z):
-            self.out.publish(m)
-        else:
-            self.out.publish(Twist())
+        self._send(m, self.gate.nav(m.linear.x, m.angular.z))
+
+    def _on_teleop(self, m: Twist) -> None:
+        self._send(m, self.gate.teleop(m.linear.x, m.angular.z))
+
+    def _send(self, m: Twist, allowed) -> None:
+        if allowed is None:             # Nav2 while teleop drives: nothing
+            return
+        self.out.publish(m if allowed == (m.linear.x, m.angular.z) else Twist())
 
     def _hold(self) -> None:
         """While stopped, zero goes out on its own: the driver follows the last
@@ -112,6 +119,7 @@ class Safety(Node):
     def _publish_state(self) -> None:
         st = self.gate.state()
         st["host"] = socket.gethostname()
+        st["teleop_topic"] = TELEOP_IN      # the app sends teleop there when it sees this
         self.state_pub.publish(String(data=json.dumps(st)))
 
 

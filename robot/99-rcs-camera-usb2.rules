@@ -1,0 +1,10 @@
+# Orbbec Astra+ camera on USB 2.0, whatever port it is plugged into.
+# Its depth sensor worked for weeks as USB 2.0. On the robot's USB 3 ports it
+# streamed for seconds to minutes, then the link failed (-71, "Cannot enable.
+# Maybe the USB cable is bad?") and depth stopped. The carrier board has only
+# USB 3 ports, so when the camera's own USB 3 hub (Genesys 05e3:0620) appears,
+# camera_usb2.py turns the USB 3 link of that port off: the camera comes back
+# on its USB 2 half within a second and the depth sensor runs as USB 2.0.
+# Remove this file (and re-plug the camera) to let the camera use USB 3 again.
+# Install: see robot/README.md, "Camera".
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="05e3", ATTR{idProduct}=="0620", RUN+="/usr/bin/python3 /home/iop/tbm_test/rcs_robot/camera_usb2.py %p"

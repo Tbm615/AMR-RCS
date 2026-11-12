@@ -10,6 +10,45 @@ Download the file for your computer. You don't need Python or ROS 2 on the opera
 
 The robot must run `rosbridge_server` on port 9090, plus the RCS launcher to use the Robot programs page. Setup and everything else are in the **[User guide](https://github.com/Tbm615/AMR-RCS/blob/main/docs/USER_GUIDE.md)**.
 
+### v0.6.1
+
+Fixes found on the real robot. **Update the robot side too** (copy `robot/` to
+the robot, `bash install_robot.sh`), and install the camera rule once (below).
+
+**Fixes**
+- **The gamepad only drove forward and back, it did not turn.** The turn was
+  read from axis 3, which is the right stick's *sideways* on Linux but its
+  *up/down* on Windows (SDL with XInput/HIDAPI). Pads SDL knows (Xbox, Flydigi,
+  PlayStation...) are now read through SDL's GameController API, the same
+  sticks on every system; other pads get their layout from where the triggers
+  rest. Either stick turns: the left stick alone, or the left for speed and the
+  right for turning.
+- **Teleop goes first.** With Nav2 or a mission driving, teleop and Nav2 both
+  reached the drives and the robot jerked between the two. Teleop now goes on
+  its own topic, `/cmd_vel_teleop`, and the robot's E-STOP gate holds Nav2 back
+  while the operator drives and for 0.5 s after; then Nav2 drives on to its
+  goal (Events: *teleop goes first*). Tested on the robot: a gamepad turn while
+  "Nav2" sent 0.05 m/s forward turned the robot on the spot, and Nav2 went on
+  once the stick was let go. An older robot side keeps the old topic.
+- **The 3D map got no frames with a working connection.** The camera's color
+  picture went on while its depth sensor had stopped, so nothing said why. The
+  launcher now counts depth frames and reports the depth sensor's USB speed,
+  and the 3D page, Status and Events say what is wrong: depth stopped, or the
+  camera driver gone after the camera dropped off USB.
+- **Astra+ depth stopped after seconds to minutes on USB 3.** Until now the
+  camera always came up as USB 2.0 and depth was fine; once its USB 3 link
+  trained, it failed (`-71`, "Cannot enable. Maybe the USB cable is bad?").
+  `robot/99-rcs-camera-usb2.rules` + `robot/camera_usb2.py` keep the camera on
+  USB 2.0 on any port, and `robot/99-rcs-camera-usb.rules` turns USB autosuspend
+  off for it (that took the driver down). Measured: depth at 30 Hz for 10
+  minutes, also after a reboot. Install once on the robot:
+  ```bash
+  cd ~/tbm_test/rcs_robot && chmod +x camera_usb2.py
+  sudo cp 99-rcs-camera-usb.rules 99-rcs-camera-usb2.rules /etc/udev/rules.d/
+  sudo udevadm control --reload-rules
+  ```
+  then re-plug the camera (see `robot/README.md`, "Camera").
+
 ### v0.6.0
 
 The v0.6 betas, now tested on the real robot (Jetson, Cyclone DDS, JK-BMS over

@@ -4,7 +4,7 @@ diagnostic bundles keep it. No Qt here.
 
 ctx keys (all optional): connected, launcher_online, launcher (state dict),
 gate (rcs_safety state), estop (bool), battery (rcs_battery dict), ages
-({stat key: seconds since last}), localized (bool), camera_problem (str),
+({stat key: seconds since last}), localized (bool), camera_problem (str), depth_problem (str),
 robot_note (str), role, user, gateway (bool | None), nav_state (str).
 """
 from __future__ import annotations
@@ -108,6 +108,8 @@ def checks(ctx: dict) -> List[Check]:
     cam = ctx.get("camera_problem")
     if cam:
         out.append(Check("camera", "Camera", "warn", "no picture", cam))
+    elif ctx.get("depth_problem"):
+        out.append(Check("camera", "Camera", "warn", "no depth (3D map)", ctx["depth_problem"]))
     return out
 
 

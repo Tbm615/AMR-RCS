@@ -1,0 +1,8 @@
+# Orbbec Astra+ camera: keep its USB devices powered (no runtime autosuspend).
+# With autosuspend on, the kernel tried to suspend the depth sensor 2 s after it
+# came up while the driver was not streaming yet; that failed (-71), the sensor
+# dropped off the bus and the driver lost it: no depth for the 3D map, or no
+# camera at all. Its own hub (Genesys 05e3:0610 USB 2 side, 05e3:0620 USB 3 side) too.
+# Install: see robot/README.md, "Camera".
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2bc5", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="add|change", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="05e3", ATTR{idProduct}=="0610|0620", TEST=="power/control", ATTR{power/control}="on"

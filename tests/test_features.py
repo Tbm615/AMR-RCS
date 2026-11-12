@@ -639,6 +639,63 @@ def test_gamepad() -> None:
     check("deadzone", i.linear == 0.0 and i.angular == 0.0, f"{i}")
     pad.axes[1] = 0.0
 
+    pad.axes[0] = -1.0
+    check("left stick sideways turns too (one-stick driving)", r.read().angular > 0.99)
+    pad.axes[0] = 0.02
+    pad.axes[4] = -1.0
+    check("right stick up drives too", r.read().linear > 0.99)
+    pad.axes[4] = 0.0
+    pad.axes[2] = 1.0
+    check("a pressed trigger does nothing", r.read() == (0.0, 0.0, True, False, False), f"{r.read()}")
+    pad.axes[2] = -1.0
+
+    # Windows (SDL with XInput / HIDAPI): LX, LY, RX, RY, LT, RT. Axis 3 there is the
+    # right stick's up/down: turning with it, sideways did nothing.
+    win = FakePad()
+    win.axes = [0.0, 0.0, 0.0, 0.0, -1.0, -1.0]
+    rw = gp.GamepadReader(win)
+    for _ in range(gp.CALIBRATION_TICKS):
+        rw.read()
+    check("Windows order told from its triggers", rw.layout == "standard" and rw.triggers == {4, 5}
+          and rw.axis_linear == 1 and rw.axis_angular == 2, f"{rw.layout} {rw.triggers} {rw.angular_axes}")
+    win.buttons[gp.BTN_DEADMAN] = True
+    win.axes[2] = -1.0
+    check("Windows: right stick left turns left", rw.read().angular > 0.99, f"{rw.read()}")
+    win.axes[2], win.axes[3] = 0.0, -1.0
+    i = rw.read()
+    check("Windows: right stick up drives, does not turn", i.linear > 0.99 and i.angular == 0.0, f"{i}")
+    win.axes[3] = 0.0
+
+    class FakeCtl:                  # pygame._sdl2.controller.Controller
+        def __init__(self):
+            self.axes, self.buttons = {}, set()
+        def get_axis(self, a): return self.axes.get(a, 0)               # noqa: E704
+        def get_button(self, b): return b in self.buttons               # noqa: E704
+        def attached(self): return True                                 # noqa: E704
+    import types
+    pg = types.SimpleNamespace(**{n: i for i, n in enumerate(
+        ["CONTROLLER_AXIS_LEFTX", "CONTROLLER_AXIS_LEFTY", "CONTROLLER_AXIS_RIGHTX", "CONTROLLER_AXIS_RIGHTY",
+         "CONTROLLER_AXIS_TRIGGERLEFT", "CONTROLLER_AXIS_TRIGGERRIGHT"])},
+        **{n: 10 + i for i, n in enumerate(
+           ["CONTROLLER_BUTTON_A", "CONTROLLER_BUTTON_B", "CONTROLLER_BUTTON_X", "CONTROLLER_BUTTON_Y",
+            "CONTROLLER_BUTTON_LEFTSHOULDER", "CONTROLLER_BUTTON_RIGHTSHOULDER", "CONTROLLER_BUTTON_BACK",
+            "CONTROLLER_BUTTON_START", "CONTROLLER_BUTTON_GUIDE", "CONTROLLER_BUTTON_LEFTSTICK",
+            "CONTROLLER_BUTTON_RIGHTSTICK"])})
+    ctl = FakeCtl()
+    c = gp.Controller(pg, ctl)
+    check("SDL controller: a released trigger reads -1", c.get_axis(4) == -1.0 and c.get_axis(5) == -1.0)
+    rc = gp.GamepadReader(c)
+    for _ in range(gp.CALIBRATION_TICKS):
+        rc.read()
+    check("SDL controller: same axes on every system", rc.layout == "standard" and rc.angular_axes == [2, 0]
+          and rc.linear_axes == [1, 3], f"{rc.angular_axes} {rc.linear_axes}")
+    ctl.buttons.add(pg.CONTROLLER_BUTTON_LEFTSHOULDER)
+    ctl.axes[pg.CONTROLLER_AXIS_RIGHTX] = 32767
+    i = rc.read()
+    check("SDL controller: LB + right stick right turns right", i.deadman and i.angular < -0.99, f"{i}")
+    ctl.buttons.add(pg.CONTROLLER_BUTTON_B)
+    check("SDL controller: B is the E-STOP", rc.read().estop)
+
     pad.buttons[gp.BTN_ESTOP] = True
     check("E-STOP on the press", r.read().estop)
     check("not again while held", not r.read().estop)

@@ -1,5 +1,5 @@
 ; Windows installer for RCS (Inno Setup 6). CI runs:
-;   ISCC.exe /DAppVersion=0.6.0 installer\rcs.iss
+;   ISCC.exe /DAppVersion=0.6.1 installer\rcs.iss
 ; from the windowed PyInstaller build in dist\rcs. Per-user by default (no
 ; admin needed), Start menu entry, optional desktop icon, uninstaller.
 #ifndef AppVersion

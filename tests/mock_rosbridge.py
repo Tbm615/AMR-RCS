@@ -215,6 +215,7 @@ class FakeRobot:
         self.gate = estop_gate.Gate(os.path.join(self.log_dir, "estop.json"))
         self.cancels = 0
         self.out: list = []          # publishes waiting to go out
+        self.driver = (0.0, 0.0)     # what the gate last let through to the base, as rcs_safety.py
 
     def status(self, age=0.5, soc=None) -> dict:
         cells = [3.30 + 0.002 * i for i in range(15)]
@@ -235,7 +236,7 @@ class FakeRobot:
         self.log.write(st)
         if "cancel_nav" in self.gate.tick(False):
             self.cancels += 1
-        g = dict(self.gate.state(), host=self.name, cancels=self.cancels)
+        g = dict(self.gate.state(), host=self.name, cancels=self.cancels, teleop_topic="/cmd_vel_teleop")
         return [{"op": "publish", "topic": "/rcs/battery", "msg": {"data": json.dumps(st)}},
                 {"op": "publish", "topic": "/rcs/estop/state", "msg": {"data": json.dumps(g)}}]
 
@@ -246,6 +247,12 @@ class FakeRobot:
             except ValueError:
                 return
             self.out.append({"op": "publish", "topic": "/rcs/battery/log", "msg": {"data": json.dumps(ans)}})
+        elif topic in ("/cmd_vel_safe", "/cmd_vel_teleop"):
+            vx = float((msg.get("linear") or {}).get("x", 0.0))
+            wz = float((msg.get("angular") or {}).get("z", 0.0))
+            out = self.gate.teleop(vx, wz) if topic == "/cmd_vel_teleop" else self.gate.nav(vx, wz)
+            if out is not None:
+                self.driver = out
         elif topic == "/amr/estop":
             if "cancel_nav" in self.gate.estop(bool(msg.get("data")), by="/amr/estop"):
                 self.cancels += 1
@@ -422,11 +429,11 @@ async def ticker():
         now = time.time()
         # read latest /cmd_vel_safe publish if any
         for p in reversed(HUB.received_publishes):
-            if p.get("topic") == "/cmd_vel_safe":
+            if p.get("topic") in ("/cmd_vel_safe", "/cmd_vel_teleop"):
                 vx = float(p["msg"]["linear"].get("x", 0.0))
                 wz = float(p["msg"]["angular"].get("z", 0.0))
                 if ROBOT is not None:       # the base follows the gate, as on the robot
-                    vx, wz = ROBOT.gate.filter(vx, wz)
+                    vx, wz = ROBOT.gate.filter(*ROBOT.driver)
                 last_cmd_t = now
                 break
         if now - last_cmd_t > 0.5:

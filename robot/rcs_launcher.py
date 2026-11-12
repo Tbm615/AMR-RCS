@@ -18,7 +18,8 @@ to it through two std_msgs/String topics carrying JSON:
   /rcs/launcher/state  robot -> app, 1 Hz and on every change
       {"version": 1, "stacks": {"bringup": {...}, "nav": {...}},
        "maps": [...], "map_mtimes": {name: mtime}, "caps": ["map_transfer", "estop_gate"],
-       "camera": {"color": bool, "depth": bool, "publishers": n},
+       "camera": {"color": bool, "depth": bool, "publishers": n,
+                  "depth_usb": Mbit/s, "depth_hz": depth frames/s, "depth_age": s or null},
        "result": {"id", "ok", "msg"}}
 
   /rcs/launcher/preview  robot -> app, answer to map_preview
@@ -55,7 +56,8 @@ from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from geometry_msgs.msg import PoseWithCovarianceStamped
@@ -66,6 +68,8 @@ from map_preview import map_preview
 import zone_masks
 
 WS = Path(os.environ.get("RCS_WS", str(Path.home() / "tbm_test"))).expanduser()
+DEPTH_INFO = "/camera/depth/camera_info"
+DEPTH_WINDOW_S = 3.0
 NAV_SHARE = WS / "install" / "navigation" / "share" / "navigation"
 MAP_DIRS = [NAV_SHARE / "maps", WS / "maps"]
 SAVED_MAPS = WS / "maps"
@@ -77,7 +81,7 @@ LOG_MAX_BYTES = 20 * 1024 * 1024
 # command passes it. RCS_ESTOP_GATE=0 starts bringup the old way, unguarded; so
 # does an RCS_BRINGUP_CMD without cmd_vel_topic:=/rcs/cmd_vel_gated (Gazebo sim).
 GATE = os.environ.get("RCS_ESTOP_GATE", "1") != "0"
-ROBOT_SIDE = "0.6.0"        # the release of these robot/ files: the app says when it is older than itself
+ROBOT_SIDE = "0.6.1"        # the release of these robot/ files: the app says when it is older than itself
 GATED_TOPIC = "/rcs/cmd_vel_gated"
 BRINGUP_CMD = shlex.split(os.environ.get(
     "RCS_BRINGUP_CMD",
@@ -366,6 +370,13 @@ class Launcher(Node):
                 self._load_map_clients[server] = self.create_client(LoadMap, f"/{server}/load_map")
         except ImportError:                     # no Nav2 here: zones are kept, never applied live
             pass
+        # Depth frames, counted by their camera_info: the driver sends only that
+        # for this subscriber (no image), so it costs next to nothing. The color
+        # picture can go on while depth has stopped, and then the 3D map gets
+        # nothing with no error anywhere: this is what lets the app say why.
+        self._depth_t: deque = deque(maxlen=400)
+        self.create_subscription(CameraInfo, DEPTH_INFO, lambda _m: self._depth_t.append(time.monotonic()),
+                                 qos_profile_sensor_data)
         self.exchange = MapExchange(_maps, SAVED_MAPS, _nav_runs_on)
         self.create_subscription(String, "/rcs/launcher/cmd", self._on_cmd, 10)
         self.result = {"id": "", "ok": True, "msg": ""}
@@ -484,8 +495,16 @@ class Launcher(Node):
         msg = {"version": 1, "rcs": ROBOT_SIDE, "time": time.time(), "stacks": stacks,
                "maps": sorted(maps), "map_mtimes": {k: _mtime(v) for k, v in maps.items()},
                "caps": ["map_transfer", "zones"] + (["estop_gate"] if GATED_TOPIC in " ".join(BRINGUP_CMD) else []), "busy": self.busy, "result": self.result,
-               "camera": {**camera_usb(), "publishers": self.count_publishers("/camera/depth/image_raw")}}
+               "camera": {**camera_usb(), "publishers": self.count_publishers("/camera/depth/image_raw"),
+                          **self._depth_rate()}}
         self.pub.publish(String(data=json.dumps(msg)))
+
+    def _depth_rate(self) -> dict:
+        now = time.monotonic()
+        recent = sum(1 for t in self._depth_t if now - t < DEPTH_WINDOW_S)
+        last = self._depth_t[-1] if self._depth_t else None
+        return {"depth_hz": round(recent / DEPTH_WINDOW_S, 1),
+                "depth_age": round(now - last, 1) if last is not None else None}
 
     # -- commands --
 

@@ -257,6 +257,7 @@ class RosClient(QObject):
         self._connect_hint = QTimer(self)
         self._connect_hint.setSingleShot(True)
         self._connect_hint.timeout.connect(self._hint_not_connected)
+        self._teleop_topic = ""         # from the robot's gate: where teleop goes (else topics.cmd_vel)
         self._seen_goals: set = set()
         self._goal_acked = True
         self._nav_goal_id: Optional[str] = None
@@ -334,6 +335,7 @@ class RosClient(QObject):
         if self._ros is not None:
             self._drop_connection()
         self.amcl_spread = None         # another robot, or this one after a while: ask anew
+        self._teleop_topic = ""         # until this robot's gate says where
         self._want_connected = True
         self._gen += 1
         gen = self._gen
@@ -512,8 +514,7 @@ class RosClient(QObject):
             self._subscribe(GW_SESSION, "std_msgs/msg/String", self._on_session)
             self._subscribe(GW_DENIED, "std_msgs/msg/String",
                             lambda m: self._on_json(m, "denied"))
-            self._subscribe(ESTOP_STATE, "std_msgs/msg/String",
-                            lambda m: (self._mark("estop_state"), self._on_json(m, "estop_state", True)))
+            self._subscribe(ESTOP_STATE, "std_msgs/msg/String", self._on_gate_state)
             if t.nav_action:
                 self._subscribe(f"{t.nav_action}/_action/status", "action_msgs/msg/GoalStatusArray",
                                 self._on_nav_status)
@@ -540,6 +541,20 @@ class RosClient(QObject):
                 except Exception:  # noqa: BLE001
                     pass
             self._subscribe("/tf_static", "tf2_msgs/msg/TFMessage", self._on_tf_static)
+
+    def _on_gate_state(self, m: dict) -> None:      # network thread
+        self._mark("estop_state")
+        try:
+            st = json.loads(m.get("data", ""))
+        except (TypeError, ValueError):
+            return
+        if not isinstance(st, dict):
+            return
+        # A robot whose gate takes teleop on its own topic lets it go first:
+        # Nav2 and missions wait while the operator drives.
+        topic = st.get("teleop_topic")
+        self._teleop_topic = topic if isinstance(topic, str) and topic.startswith("/") else ""
+        self._post("estop_state", st, coalesce=True)
 
     def _on_session(self, m: dict) -> None:         # network thread
         try:
@@ -934,6 +949,11 @@ class RosClient(QObject):
                 self._pubs[name] = pub
         return pub
 
+    def teleop_topic(self) -> str:
+        """Where teleop goes: the gate's own topic on a robot that has it (teleop
+        then comes before Nav2 and missions), else the profile's cmd_vel."""
+        return self._teleop_topic or (self.profile.topics.cmd_vel if self.profile else "")
+
     def publish_cmd_vel(self, lin: float, ang: float) -> None:
         if not self.profile:
             return
@@ -941,7 +961,7 @@ class RosClient(QObject):
             if abs(lin) > 1e-4 or abs(ang) > 1e-4:
                 self.allowed("drive")           # says why, now and then
             return
-        pub = self._advertise(self.profile.topics.cmd_vel, "geometry_msgs/msg/Twist")
+        pub = self._advertise(self.teleop_topic(), "geometry_msgs/msg/Twist")
         if pub is None:
             return
         pub.publish(roslibpy.Message({

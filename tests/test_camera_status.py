@@ -27,7 +27,8 @@ from PySide6.QtWidgets import QApplication
 
 from camera_check import camera_usb
 from rcs.core import robot_model
-from rcs.core.camera_status import NO_DEPTH_USB, NO_USB, camera_problem, usb_problem
+from rcs.core.camera_status import (DEPTH_STOPPED, DEPTH_STOPPED_USB3, DRIVER_GONE, NO_DEPTH_USB, NO_USB,
+                                    camera_problem, depth_problem, usb_problem)
 from rcs.core.profile import RobotProfile
 from rcs.core.ros_client import RosClient
 from rcs.ui.main_window import MainWindow
@@ -71,10 +72,26 @@ def tf(parent: str, child: str) -> dict:
 def main() -> int:
     print("\n[USB on the robot]")
     both = usb_tree(("2bc5", "0536"), ("2bc5", "0636"), ("05e3", "0610"))
-    check("both found", camera_usb(both) == {"color": True, "depth": True})
-    check("depth missing, as seen at boot", camera_usb(usb_tree(("2bc5", "0536"))) == {"color": True, "depth": False})
-    check("none", camera_usb(usb_tree(("05e3", "0610"))) == {"color": False, "depth": False})
-    check("no such folder is not an error", camera_usb("/nonexistent") == {"color": False, "depth": False})
+    check("both found", camera_usb(both) == {"color": True, "depth": True, "depth_usb": 0})
+    check("depth missing, as seen at boot", camera_usb(usb_tree(("2bc5", "0536")))
+          == {"color": True, "depth": False, "depth_usb": 0})
+    check("none", camera_usb(usb_tree(("05e3", "0610"))) == {"color": False, "depth": False, "depth_usb": 0})
+    check("no such folder is not an error", camera_usb("/nonexistent") == {"color": False, "depth": False,
+                                                                           "depth_usb": 0})
+    (both / "1-2.1" / "speed").write_text("5000\n")
+    check("depth sensor's link speed", camera_usb(both)["depth_usb"] == 5000, str(camera_usb(both)))
+
+    import camera_usb2
+    check("camera hub on a hub port: that hub, that port",
+          camera_usb2.parent_and_port(Path("/sys/devices/x/usb2/2-1/2-1.4")) == (Path("/sys/devices/x/usb2/2-1"), 4))
+    check("on a root hub port: the root hub", camera_usb2.parent_and_port(Path("/sys/devices/x/usb2/2-1"))
+          == (Path("/sys/devices/x/usb2"), 1))
+    hub = usb_tree(("05e3", "0620"))
+    (hub / "1-2.0" / "speed").write_text("480\n")
+    import subprocess
+    r = subprocess.run([sys.executable, str(HERE.parent / "robot" / "camera_usb2.py"), str(hub / "1-2.0")],
+                       capture_output=True, text=True)
+    check("already USB 2: nothing to do, no error", r.returncode == 0 and not r.stdout, r.stdout + r.stderr)
 
     print("\n[what the operator is told]")
     up = {"color": True, "depth": True, "publishers": 1}
@@ -94,6 +111,29 @@ def main() -> int:
     check("no launcher", "does not answer" in camera_problem(True, {}, False, t))
     check("old launcher", "Update rcs_launcher" in camera_problem(True, state(), False, t))
     check("no usb info, no usb claim", usb_problem(state()) is None)
+
+    print("\n[depth stopped while the color picture goes on]")
+
+    def running(cam, up_s=60.0, base="running", external=False):
+        st = state(base, cam, external)
+        st["time"] = 1000.0 + up_s
+        st["stacks"]["bringup"]["since"] = 1000.0
+        return st
+    dead = {**up, "depth_hz": 0.0, "depth_usb": 5000}
+    check("as on the robot: USB 3, depth stopped", depth_problem(running(dead)) == DEPTH_STOPPED_USB3)
+    check("USB 2: replug", depth_problem(running({**dead, "depth_usb": 480})) == DEPTH_STOPPED)
+    check("depth arriving: nothing", depth_problem(running({**dead, "depth_hz": 29.5})) is None)
+    check("just started: give it time", depth_problem(running(dead, up_s=5)) is None)
+    check("base off: not this", depth_problem(running(dead, base="stopped")) is None)
+    check("base started by hand counts", depth_problem(running(dead, base="stopped", external=True))
+          == DEPTH_STOPPED_USB3)
+    check("driver not up yet: not this", depth_problem(running({**dead, "publishers": 0})) is None)
+    check("old robot side (no count): nothing claimed", depth_problem(running(up)) is None)
+    check("depth not on USB: the USB message, not this", depth_problem(running({**dead, "depth": False})) is None)
+    check("driver gone long after bringup: says so", camera_problem(True, running({**up, "publishers": 0}), False, t)
+          == DRIVER_GONE)
+    check("right after bringup: still starting", "starting" in camera_problem(
+        True, running({**up, "publishers": 0}, up_s=10), False, t))
 
     print("\n[pages]")
     w = MainWindow()
@@ -117,6 +157,17 @@ def main() -> int:
     w._on_ros_disconnected()
     w._update_camera_status()
     check("offline says so", "Not connected" in w.p_cam.problem_lbl.text())
+    w.ros.is_connected = lambda: True
+    w._on_launcher_events(running(dead))
+    w.ros._mark("image")                # the color picture still comes
+    w._update_camera_status()
+    check("depth stopped: the Camera page shows the picture", w.p_cam.problem_lbl.isHidden())
+    check("the 3D page says why it gets nothing", w.p_3d.camera_problem == DEPTH_STOPPED_USB3)
+    check("and the events, once", sum(e.text == DEPTH_STOPPED_USB3 for e in w.events.events) == 1)
+    w._on_launcher_events(running({**dead, "depth_hz": 30.0}))
+    w._update_camera_status()
+    check("depth back: the 3D page says nothing", not w.p_3d.camera_problem)
+    del w.ros.is_connected
     w.close()
 
     print("\n[3D map before there is a map frame]")

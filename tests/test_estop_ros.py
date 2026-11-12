@@ -28,6 +28,7 @@ try:
     import rclpy
     from action_msgs.srv import CancelGoal
     from geometry_msgs.msg import Twist
+    from sensor_msgs.msg import CameraInfo
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     from std_msgs.msg import Bool, String
@@ -52,6 +53,8 @@ class Probe(Node):
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.cmd = self.create_publisher(Twist, "/cmd_vel_safe", 10)
+        self.teleop = self.create_publisher(Twist, "/cmd_vel_teleop", 10)
+        self.depth_info = self.create_publisher(CameraInfo, "/camera/depth/camera_info", 10)
         self.estop = self.create_publisher(Bool, "/amr/estop", 10)
         self.beat = self.create_publisher(String, "/rcs/app/heartbeat", 10)
         self.launcher = self.create_publisher(String, "/rcs/launcher/cmd", 10)
@@ -142,6 +145,34 @@ def main() -> int:
         probe.launcher.publish(String(data=json.dumps({"id": "c3", "op": "stop", "stack": "bringup"})))
         out = probe.drive(0.3, 1.0)
         check("commands pass when clear", out and all(abs(o[1] - 0.3) < 1e-6 for o in out[-5:]), f"{out[-3:]}")
+
+        print("\n[teleop goes before Nav2]")
+        check("the gate says where teleop goes", probe.state.get("teleop_topic") == "/cmd_vel_teleop",
+              f"{probe.state.get('teleop_topic')}")
+        start_t = time.monotonic()
+        nav, op = Twist(), Twist()
+        nav.linear.x, op.angular.z = 0.3, 0.5
+        while time.monotonic() - start_t < 1.0:     # both at once, as Nav2 and an operator
+            probe.cmd.publish(nav)
+            probe.teleop.publish(op)
+            probe.spin(0.05)
+        out = [o for o in probe.out if o[0] >= start_t + 0.2]
+        check("only the operator's command reaches the drives", out and all(o[1] == 0.0 and abs(o[2] - 0.5) < 1e-6
+                                                                            for o in out), f"{out[:4]}")
+        check("and the gate says Nav2 is held back", probe.spin(1.5, lambda: probe.state.get("overrides", 0) > 0),
+              f"{probe.state}")
+        probe.spin(0.6)
+        out = probe.drive(0.3, 0.6)
+        check("teleop quiet: Nav2 drives again", out and abs(out[-1][1] - 0.3) < 1e-6, f"{out[-1:]}")
+
+        print("\n[depth frames counted by the launcher]")
+        for _ in range(40):
+            probe.depth_info.publish(CameraInfo())
+            probe.spin(0.05)
+        probe.spin(1.2)
+        cam = probe.launcher_state.get("camera") or {}
+        check("depth frames/s in the launcher state", 3.0 < (cam.get("depth_hz") or 0) < 25.0
+              and cam.get("depth_age") is not None, f"{cam}")
 
         print("\n[E-STOP]")
         probe.estop.publish(Bool(data=True))

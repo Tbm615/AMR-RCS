@@ -100,6 +100,23 @@ def test_gate() -> None:
     g.heartbeat({"driving": True})
     check("a heartbeat with no id is ignored", g.state()["apps"] == 0)
 
+    print("\n[teleop goes before Nav2]")
+    check("Nav2 alone drives", g.nav(0.3, 0.1) == (0.3, 0.1) and not g.state()["teleop"])
+    check("a teleop command goes out", g.teleop(0.0, 0.5) == (0.0, 0.5))
+    check("Nav2's meanwhile do not", g.nav(0.3, 0.1) is None and g.state()["nav_overridden"])
+    t[0] += estop_gate.TELEOP_HOLD_S - 0.1
+    check("not right after the last teleop either", g.nav(0.3, 0.1) is None)
+    g.teleop(0.0, 0.0)              # the operator lets go: the app brakes with zeros
+    t[0] += estop_gate.TELEOP_HOLD_S + 0.05
+    check("once teleop is quiet, Nav2 drives on", g.nav(0.3, 0.1) == (0.3, 0.1) and not g.state()["teleop"])
+    t[0] += 1.0
+    check("no longer said to be overridden", not g.state()["nav_overridden"] and g.state()["overrides"] == 2)
+    g.estop(True)
+    check("E-STOP stops teleop too", g.teleop(0.2, 0.0) == (0.0, 0.0))
+    check("and Nav2 gets zero, not silence", g.nav(0.3, 0.1) == (0.0, 0.0))
+    g.estop(False)
+    t[0] += 1.0
+
 
 def mission() -> Mission:
     m = Mission.new("loop")
@@ -124,12 +141,31 @@ def test_app() -> None:
     check("connected and the robot's gate heard", wait(lambda: w.gate_state.get("gate")), f"{w.gate_state}")
     check("the app's heartbeat reaches it", wait(lambda: gate.state()["apps"] == 1))
     check("watching only: not driving", not any(c["driving"] for c in gate.clients.values()))
+    check("teleop goes to the gate's own topic", wait(lambda: w.ros.teleop_topic() == "/cmd_vel_teleop"),
+          w.ros.teleop_topic())
     m = mission()
     w.missions.upsert(m)
     w.p_mission.reload()
     w.p_mission.open_mission(m.id)
     w.p_mission._play(0, 0)
     check("a mission running: the robot is told", wait(lambda: any(c["driving"] for c in gate.clients.values())))
+
+    print("\n[teleop during the mission goes first]")
+    bot = mock_rosbridge.ROBOT
+    nav_cmd = {"linear": {"x": 0.3}, "angular": {"z": 0.0}}
+    bot.on_publish("/cmd_vel_safe", nav_cmd)
+    check("the mission's Nav2 drives", bot.driver == (0.3, 0.0))
+    n0 = gate.overrides
+    for _ in range(6):
+        w.ros.publish_cmd_vel(0.0, 0.6)
+        bot.on_publish("/cmd_vel_safe", nav_cmd)    # Nav2 still sends its own
+        wait(lambda: False, 0.05)
+    check("the robot turns as the operator says", wait(lambda: bot.driver == (0.0, 0.6)), str(bot.driver))
+    check("Nav2's commands held back meanwhile", gate.overrides > n0, f"{gate.overrides - n0}")
+    check("the app says so", wait(lambda: any("teleop goes first" in e.text for e in w.events.events)))
+    time.sleep(estop_gate.TELEOP_HOLD_S + 0.1)
+    bot.on_publish("/cmd_vel_safe", nav_cmd)
+    check("teleop quiet: Nav2 drives on", bot.driver == (0.3, 0.0))
 
     print("\n[E-STOP from the app is held by the robot]")
     w._set_estop(True)

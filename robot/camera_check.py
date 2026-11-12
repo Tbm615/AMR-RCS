@@ -15,11 +15,20 @@ COLOR, DEPTH = "0536", "0636"
 
 
 def camera_usb(root="/sys/bus/usb/devices") -> dict:
-    found = set()
+    """{"color", "depth": on the bus, "depth_usb": its link speed in Mbit/s or 0}.
+    The depth sensor worked as USB 2.0 (480); as USB 3 (5000) on this robot it
+    streamed a few seconds, then the kernel reported -71 (EPROTO) and depth stopped."""
+    found = {}
     for dev in Path(root).glob("*"):
         try:
             if (dev / "idVendor").read_text().strip() == ORBBEC:
-                found.add((dev / "idProduct").read_text().strip())
+                found[(dev / "idProduct").read_text().strip()] = dev
         except OSError:         # interfaces have no idVendor; devices can vanish
             continue
-    return {"color": COLOR in found, "depth": DEPTH in found}
+    speed = 0
+    if DEPTH in found:
+        try:
+            speed = int(float((found[DEPTH] / "speed").read_text().strip()))
+        except (OSError, ValueError):
+            pass
+    return {"color": COLOR in found, "depth": DEPTH in found, "depth_usb": speed}

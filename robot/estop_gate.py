@@ -3,8 +3,10 @@ and tests/mock_rosbridge.py run this very code; rcs_safety.py is the ROS shell.
 
 Every velocity command passes through here on its way to the driver:
 
-    Nav2 -> CBF -> /cmd_vel_safe  <- gamepad, RCS teleop
+    Nav2 -> CBF -> /cmd_vel_safe  <- robot gamepad (flydigi), old RCS apps
                         |
+                        |    /cmd_vel_teleop  <- RCS teleop (first)
+                        |      |
                    rcs_safety.py   (this gate)
                         |
                  /rcs/cmd_vel_gated -> diff_drive_controller
@@ -20,6 +22,13 @@ driving goes silent for HEARTBEAT_S (Wi-Fi gone, app crashed), the robot stops
 by itself: its Nav2 goal is cancelled and zero is sent for HOLD_S. Without this
 a goal sent by an app went on to the end with nobody watching. An app that is
 only watching, or that says goodbye when it closes, stops nothing.
+
+Teleop first: teleop comes on its own topic (/cmd_vel_teleop, see rcs_safety.py),
+Nav2 and missions on the shared one. While teleop commands arrive, and for
+TELEOP_HOLD_S after the last one, the shared topic is not let through: two
+streams at once would make the driver follow each in turn and the robot
+jerk between them. Nav2's goal is not cancelled: once the operator lets go, it
+drives on.
 """
 from __future__ import annotations
 
@@ -31,6 +40,7 @@ from typing import Callable, Optional
 HEARTBEAT_S = 3.0       # a driving app silent this long is gone
 HOLD_S = 1.5            # zero after losing it, then commands pass again
 CANCEL_EVERY_S = 1.0    # while engaged, a goal Nav2 still runs is cancelled again
+TELEOP_HOLD_S = 0.5     # after the last teleop command, Nav2's stay out this long
 
 
 class Gate:
@@ -46,6 +56,9 @@ class Gate:
         self.clients: dict = {}                 # id -> {"t", "driving", "host"}
         self.hold_until = 0.0
         self._last_cancel = -1e9
+        self.teleop_t = -1e9                    # last teleop command (clock)
+        self.overridden_t = -1e9                # last Nav2 command dropped for teleop
+        self.overrides = 0                      # Nav2 commands dropped for teleop
         self._load()
 
     # ---- the latch ----
@@ -124,9 +137,29 @@ class Gate:
     def filter(self, lin: float, ang: float):
         return (0.0, 0.0) if self.blocking() else (lin, ang)
 
+    def teleop_active(self) -> bool:
+        return self.clock() - self.teleop_t < TELEOP_HOLD_S
+
+    def teleop(self, lin: float, ang: float):
+        """A teleop command (RCS app, gamepad): what goes to the driver."""
+        self.teleop_t = self.clock()
+        return self.filter(lin, ang)
+
+    def nav(self, lin: float, ang: float):
+        """A command on the shared topic (Nav2 through the CBF filter): what goes
+        to the driver, or None while teleop drives (nothing goes out for it)."""
+        if self.blocking():
+            return 0.0, 0.0
+        if self.teleop_active():
+            self.overrides += 1
+            self.overridden_t = self.clock()
+            return None
+        return lin, ang
+
     def state(self) -> dict:
         now = self.clock()
         return {"engaged": self.engaged, "since": self.since, "by": self.by, "gate": True,
                 "holding": now < self.hold_until, "stops": self.stops, "last_stop": self.last_stop,
-                "apps": len(self.clients),
+                "apps": len(self.clients), "teleop": self.teleop_active(),
+                "nav_overridden": now - self.overridden_t < 1.0, "overrides": self.overrides,
                 "driving_apps": sum(1 for c in self.clients.values() if c["driving"])}

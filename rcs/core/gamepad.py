@@ -9,15 +9,29 @@ released.
 Unlike that node, driving needs a button held down (LB): this pad sits on a
 desk, and a knocked stick must not move a robot in another room.
 
+Which axis is which depends on the system, not only on the pad. Linux's
+driver gives LX, LY, LT, RX, RY, RT; SDL on Windows (XInput, HIDAPI) gives
+LX, LY, RX, RY, LT, RT. Taking axis 3 as "right stick X" everywhere made the
+right stick's up/down the turn on Windows, and sideways did nothing: the robot
+only went forward and back. So:
+  - a pad SDL knows (Xbox, Flydigi, PlayStation, Switch... nearly all) is read
+    through SDL's GameController API, which names the axes the same way on
+    every system (Controller below);
+  - any other pad: the layout is told from where its triggers rest;
+  - either stick turns and either drives: left stick alone, or left for speed
+    and right for turning, whichever is pushed further.
+
 pygame is only imported when the operator turns the gamepad on.
 """
 from __future__ import annotations
 
 import os
+import sys
 from typing import List, NamedTuple, Optional
 
-LINEAR_AXES = (1, 4)            # left stick Y, then right stick Y
-ANGULAR_AXES = (3, 2, 0)        # right stick X, then compact RX, then left stick X
+# Stick axes (lx, ly, rx, ry) for each layout; triggers come from the calibration.
+STANDARD = (0, 1, 2, 3)         # SDL GameController, XInput/HIDAPI on Windows, generic 4-axis pads
+LINUX_XPAD = (0, 1, 3, 4)       # Linux xpad / evdev: 2 and 5 are the triggers
 TRIGGER_REST = 0.7
 DEADZONE = 0.15
 CALIBRATION_TICKS = 20          # read() calls spent learning the resting state
@@ -52,8 +66,11 @@ class GamepadReader:
         self.rest: List[float] = []
         self.triggers: set = set()
         self.masked: set = set()
-        self.axis_linear = -1
+        self.axis_linear = -1           # the main ones (left stick Y, right stick X)
         self.axis_angular = -1
+        self.linear_axes: List[int] = []     # every axis that drives / turns, main one first
+        self.angular_axes: List[int] = []
+        self.layout = ""
         self._was = {BTN_ESTOP: False, BTN_SPEED: False}
 
     @property
@@ -66,17 +83,39 @@ class GamepadReader:
         self.triggers = {a for a, r in enumerate(self.rest) if abs(r) > TRIGGER_REST}
         self.masked = {b for b in range(self.pad.get_numbuttons()) if self.pad.get_button(b)}
 
-        def pick(candidates, exclude=-1):
-            return next((a for a in candidates if a < len(self.rest) and a not in self.triggers
-                         and a != exclude), -1)
+        self.layout, (lx, ly, rx, ry) = self._layout()
 
-        self.axis_linear = pick(LINEAR_AXES)
-        self.axis_angular = pick(ANGULAR_AXES, self.axis_linear)
+        def usable(axes):
+            return [a for a in axes if 0 <= a < len(self.rest) and a not in self.triggers]
+
+        self.linear_axes = usable((ly, ry))
+        self.angular_axes = usable((rx, lx))
+        self.axis_linear = self.linear_axes[0] if self.linear_axes else -1
+        self.axis_angular = self.angular_axes[0] if self.angular_axes else -1
+
+    def _layout(self):
+        """(name, (lx, ly, rx, ry)) of this pad."""
+        told = getattr(self.pad, "layout", "")
+        if told == "standard":
+            return "standard", STANDARD
+        n, trig = len(self.rest), self.triggers
+        if n >= 6 and {2, 5} <= trig:
+            return "linux", LINUX_XPAD
+        if n >= 6 and {4, 5} <= trig:
+            return "standard", STANDARD
+        if n == 4:
+            return "standard", STANDARD
+        # Triggers not found (some rest at 0 until first pressed): the platform's usual order
+        return ("linux", LINUX_XPAD) if sys.platform.startswith("linux") and n >= 5 else ("standard", STANDARD)
 
     def _axis(self, a: int) -> float:
         if a < 0:
             return 0.0
         return _deadzone(max(-1.0, min(1.0, self.pad.get_axis(a) - self.rest[a])))
+
+    def _strongest(self, axes) -> float:
+        """The axis pushed furthest of these (0 when none is)."""
+        return max((self._axis(a) for a in axes), key=abs, default=0.0)
 
     def _button(self, b: int) -> bool:
         if b >= self.pad.get_numbuttons():
@@ -103,9 +142,52 @@ class GamepadReader:
                 self._finish_calibration()
             return PadInput(0.0, 0.0, False, False, False)
         deadman = self._button(BTN_DEADMAN)
-        lin = -self._axis(self.axis_linear) if deadman else 0.0     # stick up reads negative
-        ang = -self._axis(self.axis_angular) if deadman else 0.0
+        lin = -self._strongest(self.linear_axes) if deadman else 0.0     # stick up reads negative
+        ang = -self._strongest(self.angular_axes) if deadman else 0.0    # stick left reads negative
         return PadInput(lin, ang, deadman, self._pressed(BTN_ESTOP), self._pressed(BTN_SPEED))
+
+
+class Controller:
+    """A pad SDL knows, through its GameController API, read like a joystick
+    with a fixed layout: axes LX, LY, RX, RY, LT, RT (-1..1, a released trigger
+    -1 as on Linux), buttons A, B, X, Y, LB, RB, Back, Start, Guide, LS, RS."""
+
+    layout = "standard"
+
+    def __init__(self, pg, ctl) -> None:
+        self.ctl = ctl
+        c = pg
+        self._axes = (c.CONTROLLER_AXIS_LEFTX, c.CONTROLLER_AXIS_LEFTY, c.CONTROLLER_AXIS_RIGHTX,
+                      c.CONTROLLER_AXIS_RIGHTY, c.CONTROLLER_AXIS_TRIGGERLEFT, c.CONTROLLER_AXIS_TRIGGERRIGHT)
+        self._buttons = (c.CONTROLLER_BUTTON_A, c.CONTROLLER_BUTTON_B, c.CONTROLLER_BUTTON_X,
+                         c.CONTROLLER_BUTTON_Y, c.CONTROLLER_BUTTON_LEFTSHOULDER,
+                         c.CONTROLLER_BUTTON_RIGHTSHOULDER, c.CONTROLLER_BUTTON_BACK,
+                         c.CONTROLLER_BUTTON_START, c.CONTROLLER_BUTTON_GUIDE,
+                         c.CONTROLLER_BUTTON_LEFTSTICK, c.CONTROLLER_BUTTON_RIGHTSTICK)
+
+    def get_numaxes(self) -> int:
+        return len(self._axes)
+
+    def get_axis(self, a: int) -> float:
+        v = self.ctl.get_axis(self._axes[a]) / 32767.0
+        if a >= 4:                      # triggers: 0..1 from SDL
+            v = v * 2.0 - 1.0
+        return max(-1.0, min(1.0, v))
+
+    def get_numbuttons(self) -> int:
+        return len(self._buttons)
+
+    def get_button(self, b: int) -> bool:
+        return bool(self.ctl.get_button(self._buttons[b]))
+
+    def attached(self) -> bool:
+        try:
+            return bool(self.ctl.attached())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def quit(self) -> None:
+        self.ctl.quit()
 
 
 class Pygame:
@@ -127,13 +209,30 @@ class Pygame:
         self.pg.event.pump()
         if self.pg.joystick.get_count() == 0:
             return None
+        ctl = self._controller()
+        if ctl is not None:
+            self.joy = ctl
+            return ctl.ctl.name or "gamepad"
         self.joy = self.pg.joystick.Joystick(0)
         self.joy.init()
         return self.joy.get_name()
 
+    def _controller(self) -> Optional[Controller]:
+        """The pad through SDL's GameController API, if SDL knows it."""
+        try:
+            from pygame._sdl2 import controller
+            controller.init()
+            if not controller.is_controller(0):
+                return None
+            return Controller(self.pg, controller.Controller(0))
+        except Exception:  # noqa: BLE001 - old pygame, or SDL without the API: plain joystick
+            return None
+
     def pump(self) -> bool:
         """Update the readings; False once the pad is gone."""
         self.pg.event.pump()
+        if isinstance(self.joy, Controller):
+            return self.joy.attached()
         return self.joy is not None and self.pg.joystick.get_count() > 0
 
     def close(self) -> None:

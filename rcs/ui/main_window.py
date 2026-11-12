@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from .. import APP_NAME, __version__
 from ..core.battery import alarm, live
 from ..core.battery_history import BatteryLogs
-from ..core.camera_status import camera_problem, usb_problem
+from ..core.camera_status import camera_problem, depth_problem, usb_problem
 from ..core.clearance import compute_clearance
 from ..core.events import EventLog
 from ..core.fleet import FleetMonitor
@@ -897,6 +897,7 @@ class MainWindow(QMainWindow):
             "localized": bool(t and self.tf.pose_xyyaw(t.map_frame, t.base_frame) is not None),
             "amcl": self.ros.amcl_spread,       # AMCL says it on each update only: valid while it runs
             "camera_problem": self._camera_problem,
+            "depth_problem": self._depth_problem or "",
             "robot_note": versions.robot_side_note(launcher) if online else "",
             "role": self.ros.role, "user": self.ros.user,
             "gateway": bool(self.ros.role) or bool(self.p_conn.account.gateway),
@@ -1221,6 +1222,7 @@ class MainWindow(QMainWindow):
 
     _launcher: dict = {}    # latest state from the robot's launcher
     _usb_problem = None
+    _depth_problem = None
 
     def _update_camera_status(self) -> None:
         """Say why there is no picture, on the pages that would show one."""
@@ -1239,7 +1241,13 @@ class MainWindow(QMainWindow):
         text = camera_problem(connected, st, frames, topic)
         self._camera_problem = text or ""
         self.p_cam.set_problem(text)
-        self.p_3d.camera_problem = text or ""
+        # The 3D map needs depth; the color picture alone does not tell it has stopped.
+        depth = depth_problem(st) if connected else None
+        if depth != self._depth_problem:
+            self._depth_problem = depth
+            if depth:
+                self._log("warn", "Sensors", depth)
+        self.p_3d.camera_problem = text or depth or ""
 
     def _on_launcher_events(self, st: dict) -> None:
         self._launcher = st
@@ -1661,8 +1669,13 @@ class MainWindow(QMainWindow):
             self.runs.event(f"the robot stopped itself: {last.get('reason', '')}")
         if stops is not None:
             self._robot_stops = stops
+        over = bool(st.get("nav_overridden"))
+        if over and not self._nav_overridden:
+            self._log("info", "Teleop", "teleop goes first: Nav2 and the mission wait until you let go")
+        self._nav_overridden = over
 
     _teleop_t = 0.0
+    _nav_overridden = False
 
     def _on_teleop_cmd(self, lin: float, ang: float) -> None:
         if abs(lin) > 1e-4 or abs(ang) > 1e-4:

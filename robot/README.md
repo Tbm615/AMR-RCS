@@ -124,6 +124,38 @@ zones on `/rcs/launcher/zones`. See the docstring at the top of
 `zone_masks.py`, `nav_map.launch.py`, `costmap_filters.launch.py` and
 `camera_check.py` must sit next to it.
 
+**Camera.** The launcher state says whether the camera is on USB, the depth
+sensor's link speed (`depth_usb`, Mbit/s) and how many depth frames arrive
+(`depth_hz`, counted from `/camera/depth/camera_info`, which costs the driver
+next to nothing). The color picture can go on while depth has stopped; the
+app then says why the 3D map gets no frames. On this robot the depth sensor
+streamed for weeks as USB 2.0 (480); connected as USB 3 (5000) it stopped after
+a few seconds with `-71` (EPROTO) in `journalctl -k`, and with autosuspend on
+it dropped off the bus and took the driver down. Once:
+
+```bash
+sudo cp 99-rcs-camera-usb.rules /etc/udev/rules.d/      # no USB autosuspend for the camera
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Until 2026-11-11 the camera always came up as USB 2.0 (its USB 3 link did not
+train) and depth was fine; once the link did, it failed after seconds to
+minutes ("Cannot enable. Maybe the USB cable is bad?"). The carrier board has
+only USB 3 ports, so `99-rcs-camera-usb2.rules` runs `camera_usb2.py` when the
+camera's own USB 3 hub (Genesys `05e3:0620`) appears: it sets the USB 3 link of
+that port to SS.Disabled (hub request `SetPortFeature(PORT_LINK_STATE)`), the
+camera comes back on its USB 2 half within a second and depth runs as USB 2.0
+(measured: 30 Hz for 10 minutes, the 3D map fills). Once:
+
+```bash
+chmod +x camera_usb2.py
+sudo cp 99-rcs-camera-usb2.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+```
+
+Remove the rule and re-plug the camera to let it use USB 3 again (with a good
+USB 3 cable).
+
 Nav2 on a saved map is started **without an initial pose**: set it on the
 2D Map page (or press *Use last position*); the Status page says until then.
 `robot_navigation.launch.py` sends (0, 0, 0) a few seconds after its start,
@@ -164,12 +196,22 @@ Changing zones needs the operator role; the gateway's audit log has each change.
 `rcs_safety.py` stands between every velocity command and the drives:
 
 ```
-Nav2 -> CBF -> /cmd_vel_safe  <- gamepad, RCS teleop
+Nav2 -> CBF -> /cmd_vel_safe  <- robot gamepad (flydigi), older RCS apps
                     |
+                    |   /cmd_vel_teleop  <- RCS teleop (goes first)
+                    |     |
                rcs_safety.py   (estop_gate.py)
                     |
              /rcs/cmd_vel_gated -> diff_drive_controller
 ```
+
+- **Teleop goes first.** The app sends teleop (on-screen joystick, keys, the
+  gamepad on the PC) on `/cmd_vel_teleop` once the gate's state names that
+  topic. While teleop commands arrive, and for 0.5 s after the last one,
+  `/cmd_vel_safe` (Nav2, a mission) is not let through: before, the two
+  streams reached the driver in turn and the robot jerked between them. The
+  Nav2 goal is not cancelled: once the operator lets go, it drives on (the
+  app logs "teleop goes first"). An older app still sends on `/cmd_vel_safe`.
 
 - **E-STOP** (`/amr/estop` true, from any RCS app, the Fleet page or the web
   console) latches here: commands become zero, zero is also sent on its own
