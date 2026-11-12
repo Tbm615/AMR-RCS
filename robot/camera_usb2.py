@@ -19,7 +19,6 @@ Standard library only (udev runs it as root, without the user's packages).
 from __future__ import annotations
 
 import ctypes
-import fcntl
 import os
 import struct
 import sys
@@ -38,6 +37,7 @@ def parent_and_port(dev: Path):
 
 
 def disable_ss_link(hub: Path, port: int) -> None:
+    import fcntl                        # Linux only; the tests import this file on Windows too
     node = "/dev/bus/usb/%03d/%03d" % (int((hub / "busnum").read_text()), int((hub / "devnum").read_text()))
     req = struct.pack("@BBHHHI", 0x23, SET_FEATURE, PORT_LINK_STATE, (SS_DISABLED << 8) | port, 0, 1000)
     buf = ctypes.create_string_buffer(req + b"\0" * 4 + struct.pack("@Q", 0))
